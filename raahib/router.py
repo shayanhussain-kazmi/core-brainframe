@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.commands import CommandParser
-from core.kb import KnowledgeBase
-from core.llm import CloudLLM
-from core.modes import MODE_HINTS
-from core.safety import SafetyGate
-from core.state import AppState
+from raahib.commands import CommandParser
+from raahib.kb import KnowledgeBase
+from raahib.llm import CloudLLM
+from raahib.modes import MODE_HINTS
+from raahib.safety import SafetyGate
+from raahib.state import AppState
 
 
 @dataclass(slots=True)

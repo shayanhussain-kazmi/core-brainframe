@@ -1,6 +1,6 @@
-# core-brainframe
+# raahib-os (Raahib OS)
 
-Minimal local "brain frame" core with strict routing order:
+Minimal local "brain frame" for Raahib OS with strict routing order:
 
 `command → safety → knowledge → llm`
 
@@ -12,7 +12,7 @@ Minimal local "brain frame" core with strict routing order:
 ## Run
 
 ```bash
-python -m core
+python -m raahib
 ```
 
 You will enter a REPL. Type text and receive:
@@ -31,17 +31,17 @@ Type `quit` or `exit` to leave.
 
 ## Architecture
 
-- **`core/commands.py`**: Parses control commands (`mode:*`, `status`, stub KB/memory commands).
-- **`core/safety.py`**: Blocks disallowed content; mode-specific handling for health and mood.
-- **`core/kb.py`**: Placeholder local knowledge base (`search` currently returns empty list).
-- **`core/llm.py`**: Cloud LLM stub using OpenAI Responses API when `OPENAI_API_KEY` is set; otherwise offline fallback.
-- **`core/router.py`**: Enforces strict order:
+- **`raahib/commands.py`**: Parses control commands (`mode:*`, `status`, stub KB/memory commands).
+- **`raahib/safety.py`**: Blocks disallowed content; mode-specific handling for health and mood.
+- **`raahib/kb.py`**: Placeholder local knowledge base (`search` currently returns empty list).
+- **`raahib/llm.py`**: Cloud LLM stub using OpenAI Responses API when `OPENAI_API_KEY` is set; otherwise offline fallback.
+- **`raahib/router.py`**: Enforces strict order:
   1. Command handling
   2. Safety gate
   3. Knowledge lookup + strong match placeholder threshold
   4. LLM generation
-- **`core/state.py`**: Stores mode, short-term memory, and capability flags.
-- **`core/__main__.py`**: REPL entrypoint used by `python -m core`.
+- **`raahib/state.py`**: Stores mode, short-term memory, and capability flags.
+- **`raahib/__main__.py`**: REPL entrypoint used by `python -m raahib`.
 
 ## Test
 

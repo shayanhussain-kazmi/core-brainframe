@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from core.commands import CommandParser
-from core.llm import CloudLLM
-from core.modes import Mode
-from core.router import Router
-from core.safety import SafetyGate
-from core.state import AppState
+from raahib.commands import CommandParser
+from raahib.llm import CloudLLM
+from raahib.modes import Mode
+from raahib.router import Router
+from raahib.safety import SafetyGate
+from raahib.state import AppState
 
 
 class StubLLM(CloudLLM):
