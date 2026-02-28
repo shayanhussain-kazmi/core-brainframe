@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.modes import parse_mode
-from core.state import AppState
+from raahib.modes import parse_mode
+from raahib.state import AppState
 
 
 @dataclass(slots=True)

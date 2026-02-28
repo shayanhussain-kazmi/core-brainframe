@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from core.config import DEFAULT_SETTINGS, Settings
-from core.modes import Mode
+from raahib.config import DEFAULT_SETTINGS, Settings
+from raahib.modes import Mode
 
 
 @dataclass(slots=True)

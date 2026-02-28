@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.modes import Mode
+from raahib.modes import Mode
 
 
 CRISIS_KEYWORDS = {

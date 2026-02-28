@@ -6,7 +6,7 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class Settings:
-    """Application settings for local core behavior."""
+    """Application settings for local Raahib OS behavior."""
 
     data_dir: Path = Path(".core_data")
     kb_strong_match_threshold: float = 0.8

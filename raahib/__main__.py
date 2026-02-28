@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 
-from core.router import Router
-from core.state import AppState
+from raahib.router import Router
+from raahib.state import AppState
 
 
 def main() -> None:
     state = AppState()
     router = Router(state)
-    print("core-brainframe REPL. Type 'quit' to exit.")
+    print("Raahib OS REPL. Type 'quit' to exit.")
     while True:
         try:
             user_text = input("> ").strip()
