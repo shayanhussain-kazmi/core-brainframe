@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,7 @@ from raahib.config import Settings
 from raahib.kb import KnowledgeBase
 from raahib.llm import CloudLLM
 from raahib.modes import Mode
+from raahib.providers import DuaProvider, HadithProvider
 from raahib.router import Router
 from raahib.safety import SafetyGate
 from raahib.state import AppState
@@ -22,6 +25,50 @@ class StubLLM(CloudLLM):
     def generate(self, prompt: str, mode_hint: str):
         self.called = True
         return "stub-response", {"provider": "stub"}
+
+
+def _build_hadith_db(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE hadiths (
+            id INTEGER PRIMARY KEY,
+            book_name TEXT,
+            hadith_number TEXT,
+            arabic TEXT,
+            english TEXT,
+            grading TEXT,
+            reference TEXT,
+            full_content TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
+    )
+    conn.execute(
+        """
+        INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
+        VALUES (1, 'Sahih Muslim', '45', 'الدين النصيحة', 'Religion is sincere counsel', 'sahih', 'Muslim 45', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')
+        """
+    )
+    conn.execute(
+        "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, 'الدين النصيحة', 'Religion is sincere counsel', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _build_duas_json(path: Path) -> None:
+    payload = [
+        {
+            "id": "dua-1",
+            "english": "Dua for guidance",
+            "description": "Ask Allah for straight path",
+            "arabic": ["اهْدِنَا الصِّرَاطَ الْمُسْتَقِيمَ", "صِرَاطَ الَّذِينَ أَنْعَمْتَ عَلَيْهِمْ"],
+        }
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class CommandTests(unittest.TestCase):
@@ -127,6 +174,52 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(result.metadata["type"], "kb_miss")
             self.assertIn("reliably sourced entry", result.text)
             self.assertFalse(llm.called)
+
+    def test_router_provider_preview_and_full_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            kb_path = td_path / "kb.sqlite"
+            hadith_path = td_path / "raah_e_bahisht.db"
+            duas_path = td_path / "duas.json"
+            _build_hadith_db(hadith_path)
+            _build_duas_json(duas_path)
+
+            settings = Settings(
+                data_dir=td_path,
+                kb_db_path=kb_path,
+                HADITH_DB_PATH=str(hadith_path),
+                DUAS_JSON_PATH=str(duas_path),
+            )
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            kb = KnowledgeBase(settings.kb_db_path)
+            kb.init_db()
+            hadith = HadithProvider(settings.HADITH_DB_PATH)
+            dua = DuaProvider(settings.DUAS_JSON_PATH)
+            router = Router(state=state, kb=kb, llm=llm, hadith_provider=hadith, dua_provider=dua)
+
+            preview = router.route("Share a hadith about sincere counsel")
+
+            self.assertEqual(preview.metadata["type"], "hadith_preview")
+            self.assertIn("Do you want the full narration", preview.text)
+            self.assertEqual(state.last_item, {"provider": "hadith", "id": 1})
+
+            full = router.route("full")
+
+            self.assertEqual(full.metadata["type"], "hadith_full")
+            self.assertIn("Religion is sincere counsel", full.text)
+
+    def test_sources_command_shows_provider_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            router = Router(state=state, llm=StubLLM())
+
+            result = router.route("sources")
+
+            self.assertEqual(result.metadata["type"], "command")
+            self.assertIn("hadith=off", result.text)
+            self.assertIn("dua=off", result.text)
 
     def test_router_offline_fallback_when_llm_unavailable(self) -> None:
         state = AppState()

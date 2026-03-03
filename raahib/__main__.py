@@ -9,7 +9,10 @@ from raahib.state import AppState
 def main() -> None:
     state = AppState()
     router = Router(state)
+    hadith_on = "on" if router.hadith_provider.configured else "off"
+    dua_on = "on" if router.dua_provider.configured else "off"
     print("Raahib OS REPL. Type 'quit' to exit.")
+    print(f"providers: hadith={hadith_on}, dua={dua_on}")
     while True:
         try:
             user_text = input("> ").strip()
