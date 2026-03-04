@@ -25,6 +25,13 @@ class HadithProvider:
     def configured(self) -> bool:
         return self.db_path is not None and self.db_path.exists()
 
+    def _conn(self) -> sqlite3.Connection:
+        if not self.configured:
+            raise RuntimeError("Hadith provider is not configured")
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def search(self, query: str, limit: int = 5) -> list[HadithHit]:
         if not self.configured or not query.strip():
             return []
@@ -70,18 +77,14 @@ class HadithProvider:
             ORDER BY hadiths.id ASC
         """
 
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
         try:
-            with conn:
+            with self._conn() as conn:
                 try:
                     rows = conn.execute(sql, (fts_query, limit)).fetchall()
                 except sqlite3.OperationalError:
                     rows = conn.execute(fallback_sql, (fts_query, limit)).fetchall()
-        except sqlite3.Error:
+        except (sqlite3.Error, RuntimeError):
             return []
-        finally:
-            conn.close()
 
         hits = [self._row_to_hit(r) for r in rows]
         return sorted(hits, key=lambda h: h.score, reverse=True)[:limit]
@@ -94,15 +97,11 @@ class HadithProvider:
             FROM hadiths
             WHERE id = ?
         """
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
         try:
-            with conn:
+            with self._conn() as conn:
                 row = conn.execute(sql, (hadith_id,)).fetchone()
-        except sqlite3.Error:
+        except (sqlite3.Error, RuntimeError):
             return None
-        finally:
-            conn.close()
         if not row:
             return None
         row_data = dict(row)
