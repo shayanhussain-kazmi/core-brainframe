@@ -32,39 +32,43 @@ class KnowledgeBase:
     def __init__(self, db_path: str | Path = "./data/raahib_kb.sqlite") -> None:
         self.db_path = Path(db_path)
 
-    def _conn(self) -> sqlite3.Connection:
+    def init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
-
-    def init_db(self) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS cards (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    arabic TEXT,
-                    translation_en TEXT,
-                    explanation TEXT,
-                    source_name TEXT NOT NULL,
-                    reference TEXT NOT NULL,
-                    auth_grade TEXT,
-                    tags TEXT,
-                    created_at TEXT NOT NULL
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS cards (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        type TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        arabic TEXT,
+                        translation_en TEXT,
+                        explanation TEXT,
+                        source_name TEXT NOT NULL,
+                        reference TEXT NOT NULL,
+                        auth_grade TEXT,
+                        tags TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            conn.commit()
+        finally:
+            conn.close()
 
     def seed_if_empty(self) -> None:
         self.init_db()
-        with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(*) AS c FROM cards").fetchone()
-            if row and row["c"] > 0:
-                return
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                row = conn.execute("SELECT COUNT(*) AS c FROM cards").fetchone()
+                if row and row["c"] > 0:
+                    return
+        finally:
+            conn.close()
 
         for item in _SEED_CARDS:
             self.add_card(**item)
@@ -82,41 +86,54 @@ class KnowledgeBase:
         tags: str | None = None,
     ) -> KnowledgeCard:
         created_at = datetime.now(timezone.utc).isoformat()
-        with self._conn() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO cards(type, title, arabic, translation_en, explanation, source_name, reference, auth_grade, tags, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    type,
-                    title,
-                    arabic,
-                    translation_en,
-                    explanation,
-                    source_name,
-                    reference,
-                    auth_grade,
-                    tags,
-                    created_at,
-                ),
-            )
-            conn.commit()
-            card_id = int(cursor.lastrowid)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO cards(type, title, arabic, translation_en, explanation, source_name, reference, auth_grade, tags, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        type,
+                        title,
+                        arabic,
+                        translation_en,
+                        explanation,
+                        source_name,
+                        reference,
+                        auth_grade,
+                        tags,
+                        created_at,
+                    ),
+                )
+                card_id = int(cursor.lastrowid)
+        finally:
+            conn.close()
         card = self.get_card(card_id)
         if card is None:
             raise RuntimeError("Inserted card could not be retrieved.")
         return card
 
     def get_card(self, card_id: int) -> KnowledgeCard | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        finally:
+            conn.close()
         return _row_to_card(row) if row else None
 
     def delete_card(self, card_id: int) -> bool:
-        with self._conn() as conn:
-            cursor = conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
-            conn.commit()
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                cursor = conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+        finally:
+            conn.close()
         return cursor.rowcount > 0
 
     def search(self, query: str, limit: int = 5) -> list[KnowledgeHit]:
@@ -124,8 +141,13 @@ class KnowledgeBase:
         if not terms:
             return []
 
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM cards").fetchall()
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                rows = conn.execute("SELECT * FROM cards").fetchall()
+        finally:
+            conn.close()
 
         weights = {
             "title": 4,
@@ -169,8 +191,13 @@ class KnowledgeBase:
 
     def export_json(self, path: str | Path) -> Path:
         out_path = Path(path)
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM cards ORDER BY id").fetchall()
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                rows = conn.execute("SELECT * FROM cards ORDER BY id").fetchall()
+        finally:
+            conn.close()
         payload = [dict(r) for r in rows]
         out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return out_path
