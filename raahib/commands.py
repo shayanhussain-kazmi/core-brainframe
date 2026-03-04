@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from raahib.kb import KnowledgeBase
 from raahib.modes import parse_mode
+from raahib.providers import DuaProvider, HadithProvider
 from raahib.state import AppState
 
 
@@ -15,8 +17,15 @@ class CommandResult:
 
 
 class CommandParser:
-    def __init__(self, kb: KnowledgeBase | None = None) -> None:
+    def __init__(
+        self,
+        kb: KnowledgeBase | None = None,
+        hadith_provider: HadithProvider | None = None,
+        dua_provider: DuaProvider | None = None,
+    ) -> None:
         self.kb = kb or KnowledgeBase()
+        self.hadith_provider = hadith_provider
+        self.dua_provider = dua_provider
 
     def _read_multiline(self, prompt: str) -> str | None:
         print(prompt)
@@ -29,6 +38,12 @@ class CommandParser:
             lines.append(line)
         text = "\n".join(lines).strip()
         return text or None
+
+    def _mask_path(self, path: str | None) -> str:
+        if not path:
+            return "not set"
+        p = Path(path).expanduser()
+        return str(p.parent / p.name)
 
     def parse(self, text: str, state: AppState) -> CommandResult:
         cleaned = text.strip()
@@ -55,11 +70,51 @@ class CommandParser:
             capabilities = ", ".join(
                 f"{k}={'on' if v else 'off'}" for k, v in sorted(state.capabilities.items())
             )
+            hadith_on = "on" if self.hadith_provider and self.hadith_provider.configured else "off"
+            dua_on = "on" if self.dua_provider and self.dua_provider.configured else "off"
             return CommandResult(
                 handled=True,
-                output=f"mode={state.mode.value}; capabilities: {capabilities}",
+                output=(
+                    f"mode={state.mode.value}; capabilities: {capabilities}; "
+                    f"providers: hadith={hadith_on}, dua={dua_on}"
+                ),
                 metadata={"type": "command", "name": "status", "success": "true"},
             )
+
+        if cleaned.lower() == "sources":
+            hadith_cfg = self.hadith_provider.configured if self.hadith_provider else False
+            dua_cfg = self.dua_provider.configured if self.dua_provider else False
+            return CommandResult(
+                handled=True,
+                output=(
+                    f"hadith={'on' if hadith_cfg else 'off'} path={self._mask_path(state.settings.HADITH_DB_PATH)}\n"
+                    f"dua={'on' if dua_cfg else 'off'} path={self._mask_path(state.settings.DUAS_JSON_PATH)}"
+                ),
+                metadata={"type": "command", "name": "sources", "success": "true"},
+            )
+
+        if cleaned.lower().startswith("hadith:search "):
+            query = cleaned.split(" ", 1)[1].strip()
+            if not self.hadith_provider or not self.hadith_provider.configured:
+                return CommandResult(True, "Hadith provider is disabled.", {"type": "command", "name": "hadith_search", "success": "false"})
+            hits = self.hadith_provider.search(query, limit=state.settings.PROVIDER_TOP_K)
+            if not hits:
+                return CommandResult(True, "No hadith hits found.", {"type": "command", "name": "hadith_search", "success": "true", "count": "0"})
+            lines = [
+                f"{h.id} | {h.book_name or 'Unknown'} | #{h.hadith_number or '?'} | {h.score:.2f}"
+                for h in hits
+            ]
+            return CommandResult(True, "\n".join(lines), {"type": "command", "name": "hadith_search", "success": "true", "count": str(len(hits))})
+
+        if cleaned.lower().startswith("dua:search "):
+            query = cleaned.split(" ", 1)[1].strip()
+            if not self.dua_provider or not self.dua_provider.configured:
+                return CommandResult(True, "Dua provider is disabled.", {"type": "command", "name": "dua_search", "success": "false"})
+            hits = self.dua_provider.search(query, limit=state.settings.PROVIDER_TOP_K)
+            if not hits:
+                return CommandResult(True, "No dua hits found.", {"type": "command", "name": "dua_search", "success": "true", "count": "0"})
+            lines = [f"{h.id} | {h.title} | {h.score:.2f}" for h in hits]
+            return CommandResult(True, "\n".join(lines), {"type": "command", "name": "dua_search", "success": "true", "count": str(len(hits))})
 
         if cleaned.lower().startswith("kb:search "):
             query = cleaned.split(" ", 1)[1].strip()
