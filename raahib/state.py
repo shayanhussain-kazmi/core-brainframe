@@ -14,6 +14,7 @@ class AppState:
         default_factory=lambda: DEFAULT_SETTINGS.capabilities.copy()
     )
     settings: Settings = field(default_factory=lambda: DEFAULT_SETTINGS)
+    last_item: dict[str, int | str] | None = None
 
     def remember(self, message: str) -> None:
         self.short_term_history.append(message)
