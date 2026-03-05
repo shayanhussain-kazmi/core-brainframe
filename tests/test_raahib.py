@@ -11,7 +11,7 @@ from raahib.config import Settings
 from raahib.kb import KnowledgeBase
 from raahib.llm import CloudLLM
 from raahib.modes import Mode
-from raahib.providers import DuaProvider, HadithProvider
+from raahib.providers import DuaHit, DuaProvider, HadithHit, HadithProvider
 from raahib.router import Router
 from raahib.safety import SafetyGate
 from raahib.state import AppState
@@ -25,6 +25,46 @@ class StubLLM(CloudLLM):
     def generate(self, prompt: str, mode_hint: str):
         self.called = True
         return "stub-response", {"provider": "stub"}
+
+
+class StubHadithProvider:
+    configured = True
+
+    def search(self, query: str, limit: int = 5) -> list[HadithHit]:
+        return [
+            HadithHit(
+                id=9,
+                book_name="Sahih Muslim",
+                hadith_number="9",
+                arabic="النصيحة",
+                english="Patience brings relief",
+                grading="sahih",
+                reference="Muslim 9",
+                score=0.2,
+            )
+        ]
+
+    def get_by_id(self, hadith_id: int) -> HadithHit | None:
+        return self.search("", 1)[0]
+
+
+class StubDuaProvider:
+    configured = True
+
+    def search(self, query: str, limit: int = 5) -> list[DuaHit]:
+        return [
+            DuaHit(
+                id="d-1",
+                title="Dua with higher score",
+                description="desc",
+                arabic_lines=["line 1", "line 2"],
+                translation=None,
+                score=0.99,
+            )
+        ]
+
+    def get_by_id(self, dua_id: str) -> DuaHit | None:
+        return self.search("", 1)[0]
 
 
 def _build_hadith_db(path: Path) -> None:
@@ -65,7 +105,14 @@ def _build_duas_json(path: Path) -> None:
             "id": "dua-1",
             "english": "Dua for guidance",
             "description": "Ask Allah for straight path",
-            "arabic": ["اهْدِنَا الصِّرَاطَ الْمُسْتَقِيمَ", "صِرَاطَ الَّذِينَ أَنْعَمْتَ عَلَيْهِمْ"],
+            "translation": "Guide us on the straight path",
+            "arabic": [
+                "اهْدِنَا الصِّرَاطَ الْمُسْتَقِيمَ",
+                "صِرَاطَ الَّذِينَ أَنْعَمْتَ عَلَيْهِمْ",
+                "غَيْرِ الْمَغْضُوبِ عَلَيْهِمْ",
+                "وَلَا الضَّالِّينَ",
+                "آمِينَ",
+            ],
         }
     ]
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -175,7 +222,24 @@ class RouterTests(unittest.TestCase):
             self.assertIn("reliably sourced entry", result.text)
             self.assertFalse(llm.called)
 
-    def test_router_provider_preview_and_full_flow(self) -> None:
+    def test_hadith_keyword_prefers_hadith_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("Hadith about patience")
+
+            self.assertEqual(result.metadata["type"], "hadith_preview")
+            self.assertEqual(result.metadata["provider"], "hadith")
+
+    def test_router_provider_preview_and_expand_flow(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             kb_path = td_path / "kb.sqlite"
@@ -201,13 +265,53 @@ class RouterTests(unittest.TestCase):
             preview = router.route("Share a hadith about sincere counsel")
 
             self.assertEqual(preview.metadata["type"], "hadith_preview")
+            self.assertEqual(preview.metadata["provider"], "hadith")
             self.assertIn("Do you want the full narration", preview.text)
             self.assertEqual(state.last_item, {"provider": "hadith", "id": 1})
 
-            full = router.route("full")
+            full = router.route("expand")
 
             self.assertEqual(full.metadata["type"], "hadith_full")
+            self.assertEqual(full.metadata["provider"], "hadith")
             self.assertIn("Religion is sincere counsel", full.text)
+            self.assertFalse(llm.called)
+            self.assertEqual(state.last_item, {"provider": "hadith", "id": 1})
+
+    def test_dua_preview_is_limited_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            kb_path = td_path / "kb.sqlite"
+            duas_path = td_path / "duas.json"
+            _build_duas_json(duas_path)
+            settings = Settings(data_dir=td_path, kb_db_path=kb_path, DUAS_JSON_PATH=str(duas_path))
+            state = AppState(settings=settings)
+            router = Router(state=state, kb=KnowledgeBase(settings.kb_db_path), llm=StubLLM(), dua_provider=DuaProvider(settings.DUAS_JSON_PATH))
+
+            preview = router.route("dua for guidance")
+
+            self.assertEqual(preview.metadata["type"], "dua_preview")
+            self.assertEqual(preview.metadata["provider"], "dua")
+            self.assertLessEqual(preview.text.count("\n"), 9)
+            self.assertIn("…", preview.text)
+
+    def test_last_item_cleared_on_new_non_expand_request(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            kb_path = td_path / "kb.sqlite"
+            hadith_path = td_path / "raah_e_bahisht.db"
+            _build_hadith_db(hadith_path)
+            settings = Settings(data_dir=td_path, kb_db_path=kb_path, HADITH_DB_PATH=str(hadith_path))
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            router = Router(state=state, kb=KnowledgeBase(settings.kb_db_path), llm=llm, hadith_provider=HadithProvider(settings.HADITH_DB_PATH))
+
+            preview = router.route("hadith about sincere counsel")
+            self.assertEqual(preview.metadata["type"], "hadith_preview")
+            self.assertIsNotNone(state.last_item)
+
+            non_expand = router.route("Tell me something useful")
+            self.assertEqual(non_expand.metadata["type"], "llm")
+            self.assertIsNone(state.last_item)
 
     def test_sources_command_shows_provider_flags(self) -> None:
         with tempfile.TemporaryDirectory() as td:
