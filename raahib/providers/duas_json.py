@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +12,19 @@ class DuaHit:
     title: str
     description: str
     arabic_lines: list[str]
+    translation: str | None
     score: float
+
+
+_SYNONYMS: dict[str, set[str]] = {
+    "grief": {"sadness", "anxiety", "worry", "huzn", "ham"},
+    "sadness": {"grief", "huzn", "ham", "worry"},
+    "anxiety": {"worry", "fear", "panic"},
+}
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[\w']+", text.lower()) if len(token) >= 2}
 
 
 class DuaProvider:
@@ -52,6 +65,7 @@ class DuaProvider:
                     "title": str(raw.get("english", "")).strip(),
                     "description": str(raw.get("description", "")).strip(),
                     "arabic_lines": [str(line) for line in arabic_lines],
+                    "translation": str(raw.get("translation", "")).strip() or None,
                 }
             )
         self._duas = parsed
@@ -61,6 +75,12 @@ class DuaProvider:
         terms = [term.lower() for term in query.split() if term.strip() and len(term.strip()) >= 2]
         if not terms:
             return []
+        query_tokens = _tokens(query)
+        dua_for_match = re.search(r"\bdu['’]?a\s+for\s+(.+)", query, flags=re.IGNORECASE)
+        topic_tokens = _tokens(dua_for_match.group(1)) if dua_for_match else set()
+        expanded_terms = set(query_tokens)
+        for token in list(query_tokens):
+            expanded_terms |= _SYNONYMS.get(token, set())
 
         hits: list[DuaHit] = []
         for dua in self._duas:
@@ -71,19 +91,26 @@ class DuaProvider:
                     " ".join(dua["arabic_lines"]),
                 ]
             ).lower()
-            matched_terms = sum(1 for term in terms if term in searchable)
+            searchable_tokens = _tokens(searchable)
+            matched_terms = len(expanded_terms & searchable_tokens)
             if matched_terms == 0:
                 continue
-            score = matched_terms / len(terms)
+            score = matched_terms / max(len(expanded_terms), 1)
             if query.lower().strip() and query.lower().strip() in searchable:
                 score = max(score, 0.95)
+            if topic_tokens:
+                title_desc_tokens = _tokens(f"{dua['title']} {dua['description']}")
+                topic_overlap = len(topic_tokens & title_desc_tokens)
+                if topic_overlap:
+                    score += 0.2 * (topic_overlap / len(topic_tokens))
             hits.append(
                 DuaHit(
                     id=str(dua["id"]),
                     title=str(dua["title"]),
                     description=str(dua["description"]),
                     arabic_lines=list(dua["arabic_lines"]),
-                    score=score,
+                    translation=str(dua.get("translation") or "") or None,
+                    score=min(score, 1.0),
                 )
             )
 
@@ -99,6 +126,7 @@ class DuaProvider:
                     title=str(dua["title"]),
                     description=str(dua["description"]),
                     arabic_lines=list(dua["arabic_lines"]),
+                    translation=str(dua.get("translation") or "") or None,
                     score=1.0,
                 )
         return None
