@@ -59,6 +59,41 @@ class StubDuaProvider:
                 description="desc",
                 arabic_lines=["line 1", "line 2"],
                 translation=None,
+                translation_lines=[],
+                score=0.99,
+            )
+        ]
+
+    def get_by_id(self, dua_id: str) -> DuaHit | None:
+        return self.search("", 1)[0]
+
+
+class StubHadithMissProvider:
+    configured = True
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def search(self, query: str, limit: int = 5) -> list[HadithHit]:
+        self.calls.append(query)
+        return []
+
+    def get_by_id(self, hadith_id: int) -> HadithHit | None:
+        return None
+
+
+class StubDuaHadithKisaProvider:
+    configured = True
+
+    def search(self, query: str, limit: int = 5) -> list[DuaHit]:
+        return [
+            DuaHit(
+                id="d-kisa",
+                title="Hadith Kisa",
+                description="Ahlul Bayt gathering.",
+                arabic_lines=["line1", "line2"],
+                translation=None,
+                translation_lines=[],
                 score=0.99,
             )
         ]
@@ -183,6 +218,47 @@ class KBTests(unittest.TestCase):
             self.assertIsNone(missing)
 
 
+class HadithProviderTests(unittest.TestCase):
+    def test_synonym_expansion_second_pass_finds_results(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            hadith_path = Path(td) / "raah_e_bahisht.db"
+            conn = sqlite3.connect(hadith_path)
+            conn.execute(
+                """
+                CREATE TABLE hadiths (
+                    id INTEGER PRIMARY KEY,
+                    book_name TEXT,
+                    hadith_number TEXT,
+                    arabic TEXT,
+                    english TEXT,
+                    grading TEXT,
+                    reference TEXT,
+                    full_content TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
+            )
+            conn.execute(
+                """
+                INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
+                VALUES (1, 'Sahih Muslim', '1', '', 'Sabr during hardship brings reward', 'sahih', 'Muslim 1', 'Sabr during hardship brings reward')
+                """
+            )
+            conn.execute(
+                "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, '', 'Sabr during hardship brings reward', 'Sabr during hardship brings reward')"
+            )
+            conn.commit()
+            conn.close()
+
+            provider = HadithProvider(str(hadith_path))
+            hits = provider.search("patience")
+
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0].id, 1)
+
+
 class RouterTests(unittest.TestCase):
     def test_router_chooses_command_over_llm(self) -> None:
         state = AppState()
@@ -238,6 +314,26 @@ class RouterTests(unittest.TestCase):
 
             self.assertEqual(result.metadata["type"], "hadith_preview")
             self.assertEqual(result.metadata["provider"], "hadith")
+
+    def test_explicit_hadith_intent_no_fallback_to_dua(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            hadith = StubHadithMissProvider()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=hadith,
+                dua_provider=StubDuaHadithKisaProvider(),
+            )
+
+            result = router.route("Hadith about patience")
+
+            self.assertEqual(result.metadata["type"], "hadith_miss")
+            self.assertEqual(result.metadata["attempted_query"], "Hadith about patience")
+            self.assertIn("couldn't find a hadith match", result.text)
+
 
     def test_router_provider_preview_and_expand_flow(self) -> None:
         with tempfile.TemporaryDirectory() as td:

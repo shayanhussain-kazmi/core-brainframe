@@ -13,6 +13,7 @@ class DuaHit:
     description: str
     arabic_lines: list[str]
     translation: str | None
+    translation_lines: list[str]
     score: float
 
 
@@ -65,10 +66,23 @@ class DuaProvider:
                     "title": str(raw.get("english", "")).strip(),
                     "description": str(raw.get("description", "")).strip(),
                     "arabic_lines": [str(line) for line in arabic_lines],
-                    "translation": str(raw.get("translation", "")).strip() or None,
+                    "translation": self._normalize_translation(raw.get("translation")),
+                    "translation_lines": self._normalize_translation_lines(raw.get("translation_lines")),
                 }
             )
         self._duas = parsed
+
+    def _normalize_translation(self, value: object) -> str | None:
+        if isinstance(value, list):
+            lines = [str(line).strip() for line in value if str(line).strip()]
+            return "\n".join(lines) or None
+        text = str(value or "").strip()
+        return text or None
+
+    def _normalize_translation_lines(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(line).strip() for line in value if str(line).strip()]
 
     def search(self, query: str, limit: int = 5) -> list[DuaHit]:
         self._ensure_loaded()
@@ -110,6 +124,7 @@ class DuaProvider:
                     description=str(dua["description"]),
                     arabic_lines=list(dua["arabic_lines"]),
                     translation=str(dua.get("translation") or "") or None,
+                    translation_lines=list(dua.get("translation_lines") or []),
                     score=min(score, 1.0),
                 )
             )
@@ -127,6 +142,7 @@ class DuaProvider:
                     description=str(dua["description"]),
                     arabic_lines=list(dua["arabic_lines"]),
                     translation=str(dua.get("translation") or "") or None,
+                    translation_lines=list(dua.get("translation_lines") or []),
                     score=1.0,
                 )
         return None
