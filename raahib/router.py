@@ -109,6 +109,15 @@ class Router:
     def _query_prefers_hadith(self, text: str) -> bool:
         return bool(re.search(r"\bhadith\b", text, flags=re.IGNORECASE))
 
+    def _format_hadith_miss(self, query: str) -> RouteResult:
+        return RouteResult(
+            text=(
+                "I couldn't find a hadith match for that wording in the hadith database. "
+                "Try keywords like: sabr (patience), ibtila/bala (trial), fitnah, hardship."
+            ),
+            metadata={"type": "hadith_miss", "attempted_query": query},
+        )
+
     def _query_prefers_dua(self, text: str) -> bool:
         return bool(re.search(r"\b(dua|du['’]a)\b|دعاء", text, flags=re.IGNORECASE))
 
@@ -205,7 +214,9 @@ class Router:
             if not hit:
                 return RouteResult(text="I don’t have a recent item to expand.", metadata={"type": "expand_missing"})
             lines = [hit.title, hit.description, *hit.arabic_lines[:200]]
-            if hit.translation:
+            if hit.translation_lines:
+                lines.extend(["", *hit.translation_lines])
+            elif hit.translation:
                 lines.extend(["", hit.translation])
             return RouteResult(
                 text="\n".join(line for line in lines if line),
@@ -256,8 +267,10 @@ class Router:
             if best_kb and kb_score >= self.state.settings.kb_strong_match_threshold and kb_score > (provider_best_score + 0.25):
                 return self._format_kb(best_kb)
 
-            if prefers_hadith and best_hadith:
-                return self._format_hadith_preview(best_hadith)
+            if prefers_hadith:
+                if best_hadith:
+                    return self._format_hadith_preview(best_hadith)
+                return self._format_hadith_miss(user_text)
             if prefers_dua and best_dua:
                 warning = None
                 if dua_topic and best_dua.score < _DUA_CONFIDENCE_THRESHOLD:

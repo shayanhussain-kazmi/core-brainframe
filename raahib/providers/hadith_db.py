@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 
 @dataclass(slots=True)
@@ -18,6 +19,12 @@ class HadithHit:
 
 
 class HadithProvider:
+    _SYNONYMS: dict[str, tuple[str, ...]] = {
+        "patience": ("sabr", "steadfast", "endure", "endurance"),
+        "test": ("trial", "ibtila", "bala", "fitnah", "hardship", "affliction"),
+        "grief": ("huzn", "sorrow", "worry", "anxiety"),
+    }
+
     def __init__(self, db_path: str | None = None) -> None:
         self.db_path = Path(db_path).expanduser() if db_path else None
 
@@ -36,8 +43,16 @@ class HadithProvider:
         if not self.configured or not query.strip():
             return []
 
-        terms = [t.strip() for t in query.split() if t.strip() and len(t.strip()) >= 2]
-        fts_query = " OR ".join(terms) if terms else query
+        query_terms = self._terms(query)
+        passes: list[str] = []
+        if query_terms:
+            passes.append(" OR ".join(query_terms))
+            expanded_terms = self._expand_terms(query_terms)
+            expanded_query = " OR ".join(expanded_terms)
+            if expanded_query and expanded_query != passes[0]:
+                passes.append(expanded_query)
+        else:
+            passes.append(query)
 
         sql = """
             SELECT
@@ -79,15 +94,35 @@ class HadithProvider:
 
         try:
             with self._conn() as conn:
-                try:
-                    rows = conn.execute(sql, (fts_query, limit)).fetchall()
-                except sqlite3.OperationalError:
-                    rows = conn.execute(fallback_sql, (fts_query, limit)).fetchall()
+                rows = []
+                for fts_query in passes[:2]:
+                    try:
+                        rows = conn.execute(sql, (fts_query, limit)).fetchall()
+                    except sqlite3.OperationalError:
+                        rows = conn.execute(fallback_sql, (fts_query, limit)).fetchall()
+                    if rows:
+                        break
         except (sqlite3.Error, RuntimeError):
             return []
 
         hits = [self._row_to_hit(r) for r in rows]
         return sorted(hits, key=lambda h: h.score, reverse=True)[:limit]
+
+    def _terms(self, query: str) -> list[str]:
+        return [t for t in re.findall(r"[\w']+", query.lower()) if len(t) >= 2]
+
+    def _expand_terms(self, terms: list[str]) -> list[str]:
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            if term not in seen:
+                expanded.append(term)
+                seen.add(term)
+            for synonym in self._SYNONYMS.get(term, ()):
+                if synonym not in seen:
+                    expanded.append(synonym)
+                    seen.add(synonym)
+        return expanded
 
     def get_by_id(self, hadith_id: int) -> HadithHit | None:
         if not self.configured:
