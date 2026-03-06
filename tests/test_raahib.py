@@ -75,6 +75,7 @@ class StubDuaProvider:
                 arabic_lines=["line 1", "line 2"],
                 translation=None,
                 translation_lines=[],
+                tags=[],
                 score=0.99,
             )
         ]
@@ -112,6 +113,7 @@ class StubDuaHadithKisaProvider:
                 arabic_lines=["line1", "line2"],
                 translation=None,
                 translation_lines=[],
+                tags=[],
                 score=0.99,
             )
         ]
@@ -171,7 +173,36 @@ def _build_duas_json(path: Path) -> None:
 
 
 def _build_dua_tags(path: Path) -> None:
-    path.write_text(json.dumps({"dua-1": ["grief", "sadness", "despair"]}), encoding="utf-8")
+    payload = [{"id": "dua-1", "english": "Dua for guidance", "tags": ["grief", "sadness", "despair"]}]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _build_grief_duas(path: Path) -> None:
+    payload = [
+        {
+            "id": 3,
+            "english": "Dua Kumayl",
+            "description": "Supplication for forgiveness and relief in hardship.",
+            "arabic": ["a", "b", "c", "d", "e"],
+            "translation": ["line 1", "line 2"],
+        },
+        {
+            "id": 4,
+            "english": "Dua Aman",
+            "description": "Supplication for safety.",
+            "arabic": ["x", "y"],
+            "translation": ["safety"],
+        },
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _build_grief_tags(path: Path) -> None:
+    payload = [
+        {"id": "3", "english": "Dua Kumayl", "tags": ["grief", "sadness", "hopelessness"]},
+        {"id": "4", "english": "Dua Aman", "tags": ["protection"]},
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class CommandTests(IsolatedEnvTestCase):
@@ -430,19 +461,20 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("Guide us", full.text)
             self.assertNotIn("['Guide us'", full.text)
 
-    def test_dua_tags_rank_higher(self) -> None:
+    def test_dua_for_grief_prefers_dua_kumayl_with_tags(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             duas_path = td_path / "duas.json"
             tags_path = td_path / "duas_tags.json"
-            _build_duas_json(duas_path)
-            _build_dua_tags(tags_path)
+            _build_grief_duas(duas_path)
+            _build_grief_tags(tags_path)
             provider = DuaProvider(str(duas_path), str(tags_path))
 
             hits = provider.search("dua for grief")
 
             self.assertGreater(len(hits), 0)
-            self.assertEqual(hits[0].id, "dua-1")
+            self.assertEqual(hits[0].id, "3")
+            self.assertEqual(hits[0].title, "Dua Kumayl")
 
     def test_last_item_cleared_on_new_non_expand_request(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -478,6 +510,7 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertEqual(result.metadata["type"], "command")
             self.assertIn("hadith=off", result.text)
             self.assertIn("dua=off", result.text)
+            self.assertIn("dua_tags=off", result.text)
 
     def test_hadith_debug_command(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -11,8 +11,9 @@ def main() -> None:
     router = Router(state)
     hadith_on = "on" if router.hadith_provider.configured else "off"
     dua_on = "on" if router.dua_provider.configured else "off"
+    tags_on = "on" if getattr(router.dua_provider, "tags_configured", False) else "off"
     print("Raahib OS REPL. Type 'quit' to exit.")
-    print(f"providers: hadith={hadith_on}, dua={dua_on}")
+    print(f"providers: hadith={hadith_on}, dua={dua_on}, tags={tags_on}")
     while True:
         try:
             user_text = input("> ").strip()

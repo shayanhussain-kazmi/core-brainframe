@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-
 from raahib.kb import KnowledgeBase
 from raahib.modes import parse_mode
 from raahib.providers import DuaProvider, HadithProvider
@@ -39,12 +37,6 @@ class CommandParser:
         text = "\n".join(lines).strip()
         return text or None
 
-    def _mask_path(self, path: str | None) -> str:
-        if not path:
-            return "not set"
-        p = Path(path).expanduser()
-        return str(p.parent / p.name)
-
     def parse(self, text: str, state: AppState) -> CommandResult:
         cleaned = text.strip()
         if not cleaned:
@@ -72,11 +64,12 @@ class CommandParser:
             )
             hadith_on = "on" if self.hadith_provider and self.hadith_provider.configured else "off"
             dua_on = "on" if self.dua_provider and self.dua_provider.configured else "off"
+            dua_tags_on = "on" if self.dua_provider and getattr(self.dua_provider, "tags_configured", False) else "off"
             return CommandResult(
                 handled=True,
                 output=(
                     f"mode={state.mode.value}; capabilities: {capabilities}; "
-                    f"providers: hadith={hadith_on}, dua={dua_on}"
+                    f"providers: hadith={hadith_on}, dua={dua_on}, tags={dua_tags_on}"
                 ),
                 metadata={"type": "command", "name": "status", "success": "true"},
             )
@@ -84,11 +77,13 @@ class CommandParser:
         if cleaned.lower() == "sources":
             hadith_cfg = self.hadith_provider.configured if self.hadith_provider else False
             dua_cfg = self.dua_provider.configured if self.dua_provider else False
+            dua_tags_cfg = bool(self.dua_provider and getattr(self.dua_provider, "tags_configured", False))
             return CommandResult(
                 handled=True,
                 output=(
-                    f"hadith={'on' if hadith_cfg else 'off'} path={self._mask_path(state.settings.HADITH_DB_PATH)}\n"
-                    f"dua={'on' if dua_cfg else 'off'} path={self._mask_path(state.settings.DUAS_JSON_PATH)}"
+                    f"hadith={'on' if hadith_cfg else 'off'} path={state.settings.HADITH_DB_PATH or 'not set'}\n"
+                    f"dua={'on' if dua_cfg else 'off'} path={state.settings.DUAS_JSON_PATH or 'not set'}\n"
+                    f"dua_tags={'on' if dua_tags_cfg else 'off'} path={state.settings.DUA_TAGS_PATH or 'not set'}"
                 ),
                 metadata={"type": "command", "name": "sources", "success": "true"},
             )

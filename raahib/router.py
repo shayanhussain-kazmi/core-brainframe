@@ -16,6 +16,7 @@ _ISLAMIC_KEYWORDS = {
     "qur'an",
     "hadith",
     "dua",
+    "du'a",
     "imam",
     "fiqh",
     "fatwa",
@@ -27,6 +28,8 @@ _ISLAMIC_KEYWORDS = {
     "ayah",
     "tafsir",
     "sunnah",
+    "حديث",
+    "دعاء",
 }
 
 _EXPAND_TRIGGERS = {"full", "more", "expand"}
@@ -66,8 +69,22 @@ class Router:
         self.safety = safety or SafetyGate()
         self.llm = llm or CloudLLM()
 
+    def _is_expand_intent(self, cleaned_text: str) -> bool:
+        return cleaned_text.lower() in _EXPAND_TRIGGERS
+
+    def _is_explicit_hadith_intent(self, text: str) -> bool:
+        return bool(re.search(r"\bhadith\b|حديث", text, flags=re.IGNORECASE))
+
+    def _is_explicit_dua_intent(self, text: str) -> bool:
+        lowered = text.lower().strip()
+        if lowered.startswith("dua for"):
+            return True
+        return bool(re.search(r"\b(dua|du['’]a)\b|دعاء", text, flags=re.IGNORECASE))
+
     def _is_islamic_query(self, user_text: str) -> bool:
         lowered = user_text.lower()
+        if self._is_explicit_hadith_intent(user_text) or self._is_explicit_dua_intent(user_text):
+            return True
         return any(keyword in lowered for keyword in _ISLAMIC_KEYWORDS)
 
     def _preview(self, text: str | None) -> str:
@@ -78,12 +95,6 @@ class Router:
         if len(text) <= max_chars:
             return text
         return text[:max_chars].rstrip() + "…"
-
-    def _query_prefers_hadith(self, text: str) -> bool:
-        return bool(re.search(r"\bhadith\b", text, flags=re.IGNORECASE))
-
-    def _query_prefers_dua(self, text: str) -> bool:
-        return bool(re.search(r"\b(dua|du['’]a)\b|دعاء", text, flags=re.IGNORECASE))
 
     def _format_hadith_miss(self, query: str) -> RouteResult:
         return RouteResult(
@@ -98,19 +109,26 @@ class Router:
             metadata={"type": "hadith_miss", "attempted_query": query},
         )
 
+    def _parse_reference(self, reference: str | None) -> str | None:
+        if not reference:
+            return None
+        parts = reference.split("URL:", 1)
+        if len(parts) == 2:
+            left = parts[0].strip()
+            right = parts[1].strip()
+            return f"{left} | URL: {right}" if left else f"URL: {right}"
+        return reference.strip()
+
     def _format_hadith_preview(self, hit: HadithHit) -> RouteResult:
         number = hit.hadith_number or "?"
-        lines = [f"{hit.book_name or 'Hadith'} — Hadith {number}", ""]
-        if hit.english:
-            lines.extend([self._preview(hit.english), ""])
-        reference_parts = []
-        if hit.reference:
-            reference_parts.append(hit.reference)
+        lines = [f"{hit.book_name or 'Hadith'} — {number}", ""]
+        lines.extend([self._preview(hit.english), ""])
+        parsed_reference = self._parse_reference(hit.reference)
+        if parsed_reference:
+            lines.append(parsed_reference)
         if hit.grading:
-            reference_parts.append(hit.grading)
-        if reference_parts:
-            lines.extend([" / ".join(reference_parts), ""])
-        lines.append('Say "full" or "expand" for full narration.')
+            lines.append(f"Grading: {hit.grading}")
+        lines.extend(["", 'Say "full" or "expand" for full narration.'])
         self.state.last_item = {"provider": "hadith", "id": hit.id}
         return RouteResult(
             text="\n".join(lines),
@@ -118,13 +136,18 @@ class Router:
         )
 
     def _format_dua_preview(self, hit: DuaHit) -> RouteResult:
-        lines = [hit.title or "Dua", "", hit.description or "", ""]
+        description = self._preview(hit.description)
+        lines = [hit.title or "Dua", ""]
+        if description:
+            lines.extend([description, ""])
         preview_lines = hit.arabic_lines[:4]
         lines.extend(preview_lines)
-        lines.extend(["", "...", "", 'Say "full" or "expand" for full supplication.'])
+        if len(hit.arabic_lines) > 4:
+            lines.append("...")
+        lines.extend(["", 'Say "full" or "expand" for full supplication.'])
         self.state.last_item = {"provider": "dua", "id": hit.id}
         return RouteResult(
-            text="\n".join(line for line in lines if line is not None),
+            text="\n".join(lines),
             metadata={"type": "dua_preview", "provider": "dua", "id": str(hit.id)},
         )
 
@@ -164,13 +187,16 @@ class Router:
             hit = self.hadith_provider.get_by_id(int(item_id))
             if not hit:
                 return RouteResult(text="I don’t have a recent item to expand.", metadata={"type": "expand_missing"})
-            lines = [f"{hit.book_name or 'Hadith'} — Hadith #{hit.hadith_number or '?'}", ""]
+            lines = [f"{hit.book_name or 'Hadith'} — {hit.hadith_number or '?'}", ""]
             if hit.arabic:
                 lines.extend([hit.arabic, ""])
             if hit.english:
                 lines.extend([hit.english, ""])
-            if hit.reference:
-                lines.append(hit.reference)
+            parsed_reference = self._parse_reference(hit.reference)
+            if parsed_reference:
+                lines.append(parsed_reference)
+            if hit.grading:
+                lines.append(f"Grading: {hit.grading}")
             return RouteResult(
                 text="\n".join(lines),
                 metadata={"type": "hadith_full", "provider": "hadith", "id": str(hit.id)},
@@ -185,14 +211,14 @@ class Router:
             elif hit.translation:
                 lines.extend(["", *hit.translation.splitlines()])
             return RouteResult(
-                text="\n".join(line for line in lines if line is not None),
+                text="\n".join(lines),
                 metadata={"type": "dua_full", "provider": "dua", "id": str(hit.id)},
             )
         return RouteResult(text="I don’t have a recent item to expand.", metadata={"type": "expand_missing"})
 
     def route(self, user_text: str) -> RouteResult:
         cleaned = user_text.strip()
-        if cleaned.lower() in _EXPAND_TRIGGERS:
+        if self._is_expand_intent(cleaned):
             return self._handle_expand()
 
         self.state.last_item = None
@@ -211,38 +237,44 @@ class Router:
                 metadata=safety_result.metadata or {"type": "safety", "blocked": "true"},
             )
 
-        if self._is_islamic_query(user_text):
-            prefers_hadith = self._query_prefers_hadith(user_text)
-            prefers_dua = self._query_prefers_dua(user_text)
+        explicit_hadith = self._is_explicit_hadith_intent(user_text)
+        explicit_dua = self._is_explicit_dua_intent(user_text)
+        islamic = self._is_islamic_query(user_text)
 
-            if prefers_hadith:
-                hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
-                if hadith_hits:
-                    return self._format_hadith_preview(hadith_hits[0])
-                return self._format_hadith_miss(user_text)
-
-            if prefers_dua:
-                dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
-                if dua_hits:
-                    return self._format_dua_preview(dua_hits[0])
-                return RouteResult(
-                    text="I couldn't find a relevant Islamic reference in the local knowledge sources.",
-                    metadata={"type": "kb_miss"},
-                )
-
-            kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
-            if kb_hits:
-                best_kb = kb_hits[0]
-                if best_kb.score >= self.state.settings.kb_strong_match_threshold:
-                    return self._format_kb(best_kb)
-
+        if explicit_hadith:
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if hadith_hits:
                 return self._format_hadith_preview(hadith_hits[0])
+            return self._format_hadith_miss(user_text)
 
+        if explicit_dua:
             dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if dua_hits:
                 return self._format_dua_preview(dua_hits[0])
+            return RouteResult(
+                text="I couldn't find a relevant dua in local sources.",
+                metadata={"type": "dua_miss"},
+            )
+
+        if islamic:
+            kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+            if kb_hits and kb_hits[0].score >= self.state.settings.kb_strong_match_threshold:
+                return self._format_kb(kb_hits[0])
+
+            hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+            dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+
+            best_hadith: HadithHit | None = hadith_hits[0] if hadith_hits else None
+            best_dua: DuaHit | None = dua_hits[0] if dua_hits else None
+
+            if best_hadith and best_dua:
+                if best_hadith.score >= best_dua.score:
+                    return self._format_hadith_preview(best_hadith)
+                return self._format_dua_preview(best_dua)
+            if best_hadith:
+                return self._format_hadith_preview(best_hadith)
+            if best_dua:
+                return self._format_dua_preview(best_dua)
 
             return RouteResult(
                 text="I couldn't find a relevant Islamic reference in the local knowledge sources.",
