@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -205,6 +206,21 @@ def _build_grief_tags(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+@contextmanager
+def _windows_safe_tempdir():
+    td = tempfile.TemporaryDirectory()
+    try:
+        yield Path(td.name)
+    finally:
+        for _ in range(3):
+            gc.collect()
+            try:
+                td.cleanup()
+                break
+            except PermissionError:
+                continue
+
+
 class CommandTests(IsolatedEnvTestCase):
     def test_mode_switch_command(self) -> None:
         state = AppState(settings=Settings())
@@ -272,8 +288,8 @@ class KBTests(IsolatedEnvTestCase):
 
 class HadithProviderTests(IsolatedEnvTestCase):
     def test_synonym_expansion_second_pass_finds_results(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            hadith_path = Path(td) / "raah_e_bahisht.db"
+        with _windows_safe_tempdir() as td_path:
+            hadith_path = td_path / "raah_e_bahisht.db"
             with sqlite3.connect(hadith_path) as conn:
                 conn.execute(
                     """
@@ -307,6 +323,10 @@ class HadithProviderTests(IsolatedEnvTestCase):
 
             self.assertEqual(len(hits), 1)
             self.assertEqual(hits[0].id, 1)
+
+            provider = None
+            hits = None
+            gc.collect()
 
 
 class RouterTests(IsolatedEnvTestCase):
@@ -385,8 +405,7 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("couldn't find a hadith match", result.text)
 
     def test_router_provider_preview_and_expand_flow(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            td_path = Path(td)
+        with _windows_safe_tempdir() as td_path:
             kb_path = td_path / "kb.sqlite"
             hadith_path = td_path / "raah_e_bahisht.db"
             duas_path = td_path / "duas.json"
@@ -425,6 +444,9 @@ class RouterTests(IsolatedEnvTestCase):
             router = None
             hadith = None
             dua = None
+            preview = None
+            full = None
+            settings = None
             state = None
             gc.collect()
 
@@ -477,8 +499,7 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertEqual(hits[0].title, "Dua Kumayl")
 
     def test_last_item_cleared_on_new_non_expand_request(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            td_path = Path(td)
+        with _windows_safe_tempdir() as td_path:
             kb_path = td_path / "kb.sqlite"
             hadith_path = td_path / "raah_e_bahisht.db"
             _build_hadith_db(hadith_path)
@@ -496,6 +517,9 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIsNone(state.last_item)
 
             router = None
+            preview = None
+            non_expand = None
+            settings = None
             state = None
             gc.collect()
 
@@ -513,10 +537,10 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("dua_tags=off", result.text)
 
     def test_hadith_debug_command(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            hadith_path = Path(td) / "raah_e_bahisht.db"
+        with _windows_safe_tempdir() as td_path:
+            hadith_path = td_path / "raah_e_bahisht.db"
             _build_hadith_db(hadith_path)
-            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite", HADITH_DB_PATH=str(hadith_path))
+            settings = Settings(data_dir=td_path, kb_db_path=td_path / "kb.sqlite", HADITH_DB_PATH=str(hadith_path))
             state = AppState(settings=settings)
             router = Router(state=state, llm=StubLLM())
 
@@ -526,6 +550,12 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("hadiths_fts table:", result.text)
             self.assertIn("hadith rows:", result.text)
             self.assertIn('fts sample match "patience":', result.text)
+
+            router = None
+            result = None
+            settings = None
+            state = None
+            gc.collect()
 
     def test_router_offline_fallback_when_llm_unavailable(self) -> None:
         state = AppState(settings=Settings())

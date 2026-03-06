@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,12 +34,13 @@ class HadithProvider:
     def configured(self) -> bool:
         return self.db_path is not None and self.db_path.exists()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
         if not self.configured:
             raise RuntimeError("Hadith provider is not configured")
-        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        return conn
+        with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            yield conn
 
     def search(self, query: str, limit: int = 5) -> list[HadithHit]:
         if not self.configured or not query.strip():
