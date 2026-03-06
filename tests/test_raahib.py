@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import gc
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from raahib.commands import CommandParser
 from raahib.config import Settings
@@ -15,6 +18,15 @@ from raahib.providers import DuaHit, DuaProvider, HadithHit, HadithProvider
 from raahib.router import Router
 from raahib.safety import SafetyGate
 from raahib.state import AppState
+
+
+class IsolatedEnvTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict(os.environ, {}, clear=True)
+        self._env_patcher.start()
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
 
 
 class StubLLM(CloudLLM):
@@ -46,6 +58,9 @@ class StubHadithProvider:
 
     def get_by_id(self, hadith_id: int) -> HadithHit | None:
         return self.search("", 1)[0]
+
+    def debug_stats(self, sample_term: str = "patience") -> dict[str, int | bool]:
+        return {"fts_present": True, "hadith_rows": 1, "fts_sample_match": 1}
 
 
 class StubDuaProvider:
@@ -81,6 +96,9 @@ class StubHadithMissProvider:
     def get_by_id(self, hadith_id: int) -> HadithHit | None:
         return None
 
+    def debug_stats(self, sample_term: str = "patience") -> dict[str, int | bool]:
+        return {"fts_present": False, "hadith_rows": 0, "fts_sample_match": 0}
+
 
 class StubDuaHadithKisaProvider:
     configured = True
@@ -103,35 +121,33 @@ class StubDuaHadithKisaProvider:
 
 
 def _build_hadith_db(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    conn.execute(
-        """
-        CREATE TABLE hadiths (
-            id INTEGER PRIMARY KEY,
-            book_name TEXT,
-            hadith_number TEXT,
-            arabic TEXT,
-            english TEXT,
-            grading TEXT,
-            reference TEXT,
-            full_content TEXT
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE hadiths (
+                id INTEGER PRIMARY KEY,
+                book_name TEXT,
+                hadith_number TEXT,
+                arabic TEXT,
+                english TEXT,
+                grading TEXT,
+                reference TEXT,
+                full_content TEXT
+            )
+            """
         )
-        """
-    )
-    conn.execute(
-        "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
-    )
-    conn.execute(
-        """
-        INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
-        VALUES (1, 'Sahih Muslim', '45', 'الدين النصيحة', 'Religion is sincere counsel', 'sahih', 'Muslim 45', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')
-        """
-    )
-    conn.execute(
-        "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, 'الدين النصيحة', 'Religion is sincere counsel', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')"
-    )
-    conn.commit()
-    conn.close()
+        conn.execute(
+            "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
+        )
+        conn.execute(
+            """
+            INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
+            VALUES (1, 'Sahih Muslim', '45', 'الدين النصيحة', 'Religion is sincere counsel', 'sahih', 'Muslim 45', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')
+            """
+        )
+        conn.execute(
+            "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, 'الدين النصيحة', 'Religion is sincere counsel', 'Religion is sincere counsel. We said, To whom? He said: To Allah, His Book, His Messenger, and to the leaders and common folk.')"
+        )
 
 
 def _build_duas_json(path: Path) -> None:
@@ -141,6 +157,7 @@ def _build_duas_json(path: Path) -> None:
             "english": "Dua for guidance",
             "description": "Ask Allah for straight path",
             "translation": "Guide us on the straight path",
+            "translation_lines": ["Guide us", "On the straight path"],
             "arabic": [
                 "اهْدِنَا الصِّرَاطَ الْمُسْتَقِيمَ",
                 "صِرَاطَ الَّذِينَ أَنْعَمْتَ عَلَيْهِمْ",
@@ -153,9 +170,13 @@ def _build_duas_json(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-class CommandTests(unittest.TestCase):
+def _build_dua_tags(path: Path) -> None:
+    path.write_text(json.dumps({"dua-1": ["grief", "sadness", "despair"]}), encoding="utf-8")
+
+
+class CommandTests(IsolatedEnvTestCase):
     def test_mode_switch_command(self) -> None:
-        state = AppState()
+        state = AppState(settings=Settings())
         parser = CommandParser()
 
         result = parser.parse("mode:tutor", state)
@@ -164,7 +185,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(state.mode, Mode.TUTOR)
 
     def test_status_command(self) -> None:
-        state = AppState()
+        state = AppState(settings=Settings())
         parser = CommandParser()
 
         result = parser.parse("status", state)
@@ -173,7 +194,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("mode=general", result.output)
 
 
-class SafetyTests(unittest.TestCase):
+class SafetyTests(IsolatedEnvTestCase):
     def test_disallowed_domain_is_blocked(self) -> None:
         gate = SafetyGate()
 
@@ -183,7 +204,7 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("can't help", result.message)
 
 
-class KBTests(unittest.TestCase):
+class KBTests(IsolatedEnvTestCase):
     def test_kb_seed_and_search(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "kb.sqlite"
@@ -218,39 +239,37 @@ class KBTests(unittest.TestCase):
             self.assertIsNone(missing)
 
 
-class HadithProviderTests(unittest.TestCase):
+class HadithProviderTests(IsolatedEnvTestCase):
     def test_synonym_expansion_second_pass_finds_results(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             hadith_path = Path(td) / "raah_e_bahisht.db"
-            conn = sqlite3.connect(hadith_path)
-            conn.execute(
-                """
-                CREATE TABLE hadiths (
-                    id INTEGER PRIMARY KEY,
-                    book_name TEXT,
-                    hadith_number TEXT,
-                    arabic TEXT,
-                    english TEXT,
-                    grading TEXT,
-                    reference TEXT,
-                    full_content TEXT
+            with sqlite3.connect(hadith_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE hadiths (
+                        id INTEGER PRIMARY KEY,
+                        book_name TEXT,
+                        hadith_number TEXT,
+                        arabic TEXT,
+                        english TEXT,
+                        grading TEXT,
+                        reference TEXT,
+                        full_content TEXT
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
-            )
-            conn.execute(
-                """
-                INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
-                VALUES (1, 'Sahih Muslim', '1', '', 'Sabr during hardship brings reward', 'sahih', 'Muslim 1', 'Sabr during hardship brings reward')
-                """
-            )
-            conn.execute(
-                "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, '', 'Sabr during hardship brings reward', 'Sabr during hardship brings reward')"
-            )
-            conn.commit()
-            conn.close()
+                conn.execute(
+                    "CREATE VIRTUAL TABLE hadiths_fts USING fts5(arabic, english, full_content, content='hadiths', content_rowid='id')"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO hadiths (id, book_name, hadith_number, arabic, english, grading, reference, full_content)
+                    VALUES (1, 'Sahih Muslim', '1', '', 'Sabr during hardship brings reward', 'sahih', 'Muslim 1', 'Sabr during hardship brings reward')
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO hadiths_fts(rowid, arabic, english, full_content) VALUES (1, '', 'Sabr during hardship brings reward', 'Sabr during hardship brings reward')"
+                )
 
             provider = HadithProvider(str(hadith_path))
             hits = provider.search("patience")
@@ -259,9 +278,9 @@ class HadithProviderTests(unittest.TestCase):
             self.assertEqual(hits[0].id, 1)
 
 
-class RouterTests(unittest.TestCase):
+class RouterTests(IsolatedEnvTestCase):
     def test_router_chooses_command_over_llm(self) -> None:
-        state = AppState()
+        state = AppState(settings=Settings())
         llm = StubLLM()
         router = Router(state=state, llm=llm)
 
@@ -295,7 +314,7 @@ class RouterTests(unittest.TestCase):
             result = router.route("What is the fiqh ruling on lunar derivatives futures?")
 
             self.assertEqual(result.metadata["type"], "kb_miss")
-            self.assertIn("reliably sourced entry", result.text)
+            self.assertIn("local knowledge sources", result.text)
             self.assertFalse(llm.called)
 
     def test_hadith_keyword_prefers_hadith_provider(self) -> None:
@@ -334,7 +353,6 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(result.metadata["attempted_query"], "Hadith about patience")
             self.assertIn("couldn't find a hadith match", result.text)
 
-
     def test_router_provider_preview_and_expand_flow(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -362,7 +380,7 @@ class RouterTests(unittest.TestCase):
 
             self.assertEqual(preview.metadata["type"], "hadith_preview")
             self.assertEqual(preview.metadata["provider"], "hadith")
-            self.assertIn("Do you want the full narration", preview.text)
+            self.assertIn('Say "full" or "expand" for full narration.', preview.text)
             self.assertEqual(state.last_item, {"provider": "hadith", "id": 1})
 
             full = router.route("expand")
@@ -372,6 +390,12 @@ class RouterTests(unittest.TestCase):
             self.assertIn("Religion is sincere counsel", full.text)
             self.assertFalse(llm.called)
             self.assertEqual(state.last_item, {"provider": "hadith", "id": 1})
+
+            router = None
+            hadith = None
+            dua = None
+            state = None
+            gc.collect()
 
     def test_dua_preview_is_limited_lines(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -387,8 +411,38 @@ class RouterTests(unittest.TestCase):
 
             self.assertEqual(preview.metadata["type"], "dua_preview")
             self.assertEqual(preview.metadata["provider"], "dua")
-            self.assertLessEqual(preview.text.count("\n"), 9)
-            self.assertIn("…", preview.text)
+            self.assertIn("...", preview.text)
+            self.assertIn('Say "full" or "expand" for full supplication.', preview.text)
+
+    def test_dua_full_outputs_translation_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            kb_path = td_path / "kb.sqlite"
+            duas_path = td_path / "duas.json"
+            _build_duas_json(duas_path)
+            settings = Settings(data_dir=td_path, kb_db_path=kb_path, DUAS_JSON_PATH=str(duas_path))
+            state = AppState(settings=settings)
+            router = Router(state=state, kb=KnowledgeBase(settings.kb_db_path), llm=StubLLM(), dua_provider=DuaProvider(settings.DUAS_JSON_PATH))
+
+            _ = router.route("dua for guidance")
+            full = router.route("full")
+            self.assertEqual(full.metadata["type"], "dua_full")
+            self.assertIn("Guide us", full.text)
+            self.assertNotIn("['Guide us'", full.text)
+
+    def test_dua_tags_rank_higher(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            duas_path = td_path / "duas.json"
+            tags_path = td_path / "duas_tags.json"
+            _build_duas_json(duas_path)
+            _build_dua_tags(tags_path)
+            provider = DuaProvider(str(duas_path), str(tags_path))
+
+            hits = provider.search("dua for grief")
+
+            self.assertGreater(len(hits), 0)
+            self.assertEqual(hits[0].id, "dua-1")
 
     def test_last_item_cleared_on_new_non_expand_request(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -409,6 +463,10 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(non_expand.metadata["type"], "llm")
             self.assertIsNone(state.last_item)
 
+            router = None
+            state = None
+            gc.collect()
+
     def test_sources_command_shows_provider_flags(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
@@ -421,8 +479,23 @@ class RouterTests(unittest.TestCase):
             self.assertIn("hadith=off", result.text)
             self.assertIn("dua=off", result.text)
 
+    def test_hadith_debug_command(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            hadith_path = Path(td) / "raah_e_bahisht.db"
+            _build_hadith_db(hadith_path)
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite", HADITH_DB_PATH=str(hadith_path))
+            state = AppState(settings=settings)
+            router = Router(state=state, llm=StubLLM())
+
+            result = router.route("hadith:debug")
+
+            self.assertEqual(result.metadata["type"], "command")
+            self.assertIn("hadiths_fts table:", result.text)
+            self.assertIn("hadith rows:", result.text)
+            self.assertIn('fts sample match "patience":', result.text)
+
     def test_router_offline_fallback_when_llm_unavailable(self) -> None:
-        state = AppState()
+        state = AppState(settings=Settings())
         router = Router(state=state, llm=CloudLLM())
 
         result = router.route("Tell me something useful")

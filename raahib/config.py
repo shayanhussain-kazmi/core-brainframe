@@ -13,6 +13,7 @@ class Settings:
     kb_db_path: Path = Path("./data/raahib_kb.sqlite")
     HADITH_DB_PATH: str | None = None
     DUAS_JSON_PATH: str | None = None
+    DUA_TAGS_PATH: str | None = None
     MAX_PREVIEW_CHARS: int = 240
     PROVIDER_TOP_K: int = 5
     KB_STRONG_MATCH_THRESHOLD: float = 0.72
@@ -36,6 +37,7 @@ class Settings:
     def __post_init__(self) -> None:
         self.HADITH_DB_PATH = self.HADITH_DB_PATH or os.getenv("RAAHIB_HADITH_DB_PATH")
         self.DUAS_JSON_PATH = self.DUAS_JSON_PATH or os.getenv("RAAHIB_DUAS_JSON_PATH")
+        self.DUA_TAGS_PATH = self.DUA_TAGS_PATH or os.getenv("RAAHIB_DUA_TAGS_PATH")
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.kb_db_path.parent.mkdir(parents=True, exist_ok=True)
 

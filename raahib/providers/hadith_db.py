@@ -20,9 +20,10 @@ class HadithHit:
 
 class HadithProvider:
     _SYNONYMS: dict[str, tuple[str, ...]] = {
-        "patience": ("sabr", "steadfast", "endure", "endurance"),
-        "test": ("trial", "ibtila", "bala", "fitnah", "hardship", "affliction"),
-        "grief": ("huzn", "sorrow", "worry", "anxiety"),
+        "patience": ("sabr", "steadfast", "endurance"),
+        "trial": ("ibtila", "bala", "hardship", "affliction"),
+        "grief": ("sorrow", "anxiety", "huzn"),
+        "test": ("fitnah", "trial"),
     }
 
     def __init__(self, db_path: str | None = None) -> None:
@@ -44,15 +45,14 @@ class HadithProvider:
             return []
 
         query_terms = self._terms(query)
-        passes: list[str] = []
+        passes: list[list[str]] = []
         if query_terms:
-            passes.append(" OR ".join(query_terms))
+            passes.append(self._dedupe(query_terms))
             expanded_terms = self._expand_terms(query_terms)
-            expanded_query = " OR ".join(expanded_terms)
-            if expanded_query and expanded_query != passes[0]:
-                passes.append(expanded_query)
+            if expanded_terms != passes[0]:
+                passes.append(expanded_terms)
         else:
-            passes.append(query)
+            passes.append([query])
 
         sql = """
             SELECT
@@ -73,7 +73,7 @@ class HadithProvider:
             )
             ORDER BY rank ASC
         """
-        fallback_sql = """
+        like_sql = """
             SELECT
                 hadiths.id,
                 hadiths.book_name,
@@ -84,24 +84,37 @@ class HadithProvider:
                 hadiths.reference,
                 0.0 AS rank
             FROM hadiths
-            WHERE hadiths.id IN (
-                SELECT rowid FROM hadiths_fts
-                WHERE hadiths_fts MATCH ?
-                LIMIT ?
+            WHERE (
+                lower(COALESCE(hadiths.arabic, '')) LIKE ? OR
+                lower(COALESCE(hadiths.english, '')) LIKE ? OR
+                lower(COALESCE(hadiths.reference, '')) LIKE ?
             )
             ORDER BY hadiths.id ASC
+            LIMIT ?
         """
 
         try:
             with self._conn() as conn:
                 rows = []
-                for fts_query in passes[:2]:
+                for pass_terms in passes[:2]:
+                    fts_query = " OR ".join(pass_terms)
                     try:
                         rows = conn.execute(sql, (fts_query, limit)).fetchall()
                     except sqlite3.OperationalError:
-                        rows = conn.execute(fallback_sql, (fts_query, limit)).fetchall()
+                        rows = []
                     if rows:
                         break
+                if not rows:
+                    for term in self._dedupe(self._expand_terms(query_terms))[:12]:
+                        pattern = f"%{term.lower()}%"
+                        term_rows = conn.execute(like_sql, (pattern, pattern, pattern, limit)).fetchall()
+                        for row in term_rows:
+                            if all(existing["id"] != row["id"] for existing in rows):
+                                rows.append(row)
+                                if len(rows) >= limit:
+                                    break
+                        if len(rows) >= limit:
+                            break
         except (sqlite3.Error, RuntimeError):
             return []
 
@@ -123,6 +136,43 @@ class HadithProvider:
                     expanded.append(synonym)
                     seen.add(synonym)
         return expanded
+
+    def _dedupe(self, terms: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for term in terms:
+            if term not in seen:
+                seen.add(term)
+                out.append(term)
+        return out
+
+    def debug_stats(self, sample_term: str = "patience") -> dict[str, int | bool]:
+        if not self.configured:
+            return {"fts_present": False, "hadith_rows": 0, "fts_sample_match": 0}
+        try:
+            with self._conn() as conn:
+                table_row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hadiths_fts'"
+                ).fetchone()
+                hadith_rows = conn.execute("SELECT COUNT(*) AS c FROM hadiths").fetchone()
+                fts_sample_match = 0
+                if table_row:
+                    try:
+                        sample_row = conn.execute(
+                            "SELECT COUNT(*) AS c FROM hadiths_fts WHERE hadiths_fts MATCH ?",
+                            (sample_term,),
+                        ).fetchone()
+                        fts_sample_match = int(sample_row["c"]) if sample_row else 0
+                    except sqlite3.OperationalError:
+                        fts_sample_match = 0
+        except (sqlite3.Error, RuntimeError):
+            return {"fts_present": False, "hadith_rows": 0, "fts_sample_match": 0}
+
+        return {
+            "fts_present": bool(table_row),
+            "hadith_rows": int(hadith_rows["c"]) if hadith_rows else 0,
+            "fts_sample_match": fts_sample_match,
+        }
 
     def get_by_id(self, hadith_id: int) -> HadithHit | None:
         if not self.configured:
