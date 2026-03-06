@@ -14,13 +14,29 @@ class DuaHit:
     arabic_lines: list[str]
     translation: str | None
     translation_lines: list[str]
+    tags: list[str]
     score: float
 
 
-_SYNONYMS: dict[str, set[str]] = {
-    "grief": {"sadness", "anxiety", "worry", "huzn", "ham", "despair"},
-    "sadness": {"grief", "huzn", "ham", "worry", "despair"},
-    "anxiety": {"worry", "fear", "panic"},
+_TOPIC_SYNONYMS: dict[str, set[str]] = {
+    "grief": {
+        "grief",
+        "sadness",
+        "huzn",
+        "ham",
+        "sorrow",
+        "depressed",
+        "depression",
+        "hopeless",
+        "hopelessness",
+    },
+    "anxiety": {"anxiety", "anxious", "worry", "worried", "panic", "fear"},
+}
+
+_GENERAL_SYNONYMS: dict[str, set[str]] = {
+    token: {alias for alias in synonyms if alias != token}
+    for synonyms in _TOPIC_SYNONYMS.values()
+    for token in synonyms
 }
 
 
@@ -33,12 +49,15 @@ class DuaProvider:
         self.json_path = Path(json_path).expanduser() if json_path else None
         self.tags_path = Path(tags_path).expanduser() if tags_path else None
         self._duas: list[dict[str, object]] = []
-        self._tags: dict[str, set[str]] = {}
         self._loaded = False
 
     @property
     def configured(self) -> bool:
         return self.json_path is not None and self.json_path.exists()
+
+    @property
+    def tags_configured(self) -> bool:
+        return self.tags_path is not None and self.tags_path.exists()
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -46,17 +65,14 @@ class DuaProvider:
         self._loaded = True
         if not self.configured:
             self._duas = []
-            self._tags = {}
             return
         try:
             payload = json.loads(self.json_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             self._duas = []
-            self._tags = {}
             return
         if not isinstance(payload, list):
             self._duas = []
-            self._tags = {}
             return
         parsed: list[dict[str, object]] = []
         for raw in payload:
@@ -73,25 +89,51 @@ class DuaProvider:
                     "arabic_lines": [str(line).strip() for line in arabic_lines if str(line).strip()],
                     "translation": self._normalize_translation(raw.get("translation")),
                     "translation_lines": self._normalize_translation_lines(raw.get("translation_lines")),
+                    "tags": set(),
                 }
             )
         self._duas = parsed
-        self._tags = self._load_tags()
+        self._attach_tags(self._load_tags())
 
-    def _load_tags(self) -> dict[str, set[str]]:
+    def _load_tags(self) -> list[dict[str, object]]:
         if not self.tags_path or not self.tags_path.exists():
-            return {}
+            return []
         try:
             payload = json.loads(self.tags_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        tags: dict[str, set[str]] = {}
-        for key, value in payload.items():
-            if isinstance(value, list):
-                tags[str(key)] = {str(v).lower().strip() for v in value if str(v).strip()}
-        return tags
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
+    def _attach_tags(self, tags_payload: list[dict[str, object]]) -> None:
+        if not tags_payload:
+            return
+        by_id = {str(dua["id"]): dua for dua in self._duas}
+        by_title = {str(dua["title"]).strip().lower(): dua for dua in self._duas}
+        for raw in tags_payload:
+            raw_tags = raw.get("tags")
+            if not isinstance(raw_tags, list):
+                continue
+            tags = {str(tag).strip().lower() for tag in raw_tags if str(tag).strip()}
+            if not tags:
+                continue
+
+            target = None
+            raw_id = raw.get("id")
+            if raw_id is not None:
+                target = by_id.get(str(raw_id))
+            if target is None:
+                raw_title = str(raw.get("english", "")).strip().lower()
+                if raw_title:
+                    target = by_title.get(raw_title)
+            if target is None:
+                continue
+            target_tags = target.get("tags")
+            if not isinstance(target_tags, set):
+                target_tags = set()
+                target["tags"] = target_tags
+            target_tags.update(tags)
 
     def _normalize_translation(self, value: object) -> str | None:
         if isinstance(value, list):
@@ -107,13 +149,17 @@ class DuaProvider:
 
     def search(self, query: str, limit: int = 5) -> list[DuaHit]:
         self._ensure_loaded()
-        terms = [term.lower() for term in query.split() if term.strip() and len(term.strip()) >= 2]
-        if not terms:
+        if not query.strip():
             return []
         query_tokens = _tokens(query)
+        if not query_tokens:
+            return []
         expanded_terms = set(query_tokens)
         for token in list(query_tokens):
-            expanded_terms |= _SYNONYMS.get(token, set())
+            expanded_terms |= _GENERAL_SYNONYMS.get(token, set())
+
+        topic = self._extract_topic(query_tokens)
+        topic_tags = _TOPIC_SYNONYMS.get(topic, set()) if topic else set()
 
         hits: list[DuaHit] = []
         for dua in self._duas:
@@ -126,15 +172,18 @@ class DuaProvider:
             ).lower()
             searchable_tokens = _tokens(searchable)
             matched_terms = len(expanded_terms & searchable_tokens)
-            tags = self._tags.get(str(dua["id"]), set())
+            tags = dua.get("tags") if isinstance(dua.get("tags"), set) else set()
             tag_overlap = len(query_tokens & tags)
-            if matched_terms == 0 and tag_overlap == 0:
+            topic_overlap = len(topic_tags & tags)
+            if matched_terms == 0 and tag_overlap == 0 and topic_overlap == 0:
                 continue
             score = matched_terms / max(len(expanded_terms), 1)
             if query.lower().strip() and query.lower().strip() in searchable:
                 score = max(score, 0.95)
             if tag_overlap:
                 score += 1.5 + (tag_overlap / max(len(query_tokens), 1))
+            if topic_overlap:
+                score += 5.0 + (topic_overlap / max(len(topic_tags), 1))
             hits.append(
                 DuaHit(
                     id=str(dua["id"]),
@@ -143,12 +192,19 @@ class DuaProvider:
                     arabic_lines=list(dua["arabic_lines"]),
                     translation=str(dua.get("translation") or "") or None,
                     translation_lines=list(dua.get("translation_lines") or []),
+                    tags=sorted(tags),
                     score=score,
                 )
             )
 
-        hits.sort(key=lambda h: h.score, reverse=True)
+        hits.sort(key=lambda h: (-h.score, h.id))
         return hits[:limit]
+
+    def _extract_topic(self, query_tokens: set[str]) -> str | None:
+        for topic, synonyms in _TOPIC_SYNONYMS.items():
+            if query_tokens & synonyms:
+                return topic
+        return None
 
     def get_by_id(self, dua_id: str) -> DuaHit | None:
         self._ensure_loaded()
@@ -161,6 +217,7 @@ class DuaProvider:
                     arabic_lines=list(dua["arabic_lines"]),
                     translation=str(dua.get("translation") or "") or None,
                     translation_lines=list(dua.get("translation_lines") or []),
+                    tags=sorted(dua.get("tags") if isinstance(dua.get("tags"), set) else set()),
                     score=1.0,
                 )
         return None

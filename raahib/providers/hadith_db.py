@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 
 @dataclass(slots=True)
@@ -45,14 +45,11 @@ class HadithProvider:
             return []
 
         query_terms = self._terms(query)
-        passes: list[list[str]] = []
-        if query_terms:
-            passes.append(self._dedupe(query_terms))
-            expanded_terms = self._expand_terms(query_terms)
-            if expanded_terms != passes[0]:
-                passes.append(expanded_terms)
-        else:
-            passes.append([query])
+        if not query_terms:
+            return []
+
+        fts_primary = self._dedupe(query_terms)
+        fts_expanded = self._expand_terms(query_terms)
 
         sql = """
             SELECT
@@ -71,8 +68,9 @@ class HadithProvider:
                 WHERE hadiths_fts MATCH ?
                 LIMIT ?
             )
-            ORDER BY rank ASC
+            ORDER BY rank ASC, hadiths.id ASC
         """
+
         like_sql = """
             SELECT
                 hadiths.id,
@@ -85,44 +83,62 @@ class HadithProvider:
                 0.0 AS rank
             FROM hadiths
             WHERE (
-                lower(COALESCE(hadiths.arabic, '')) LIKE ? OR
                 lower(COALESCE(hadiths.english, '')) LIKE ? OR
-                lower(COALESCE(hadiths.reference, '')) LIKE ?
+                lower(COALESCE(hadiths.full_content, '')) LIKE ?
             )
             ORDER BY hadiths.id ASC
             LIMIT ?
         """
 
+        rows: list[sqlite3.Row] = []
         try:
             with self._conn() as conn:
-                rows = []
-                for pass_terms in passes[:2]:
-                    fts_query = " OR ".join(pass_terms)
-                    try:
-                        rows = conn.execute(sql, (fts_query, limit)).fetchall()
-                    except sqlite3.OperationalError:
-                        rows = []
-                    if rows:
-                        break
+                rows = self._fts_query(conn, sql, fts_primary, limit)
                 if not rows:
-                    for term in self._dedupe(self._expand_terms(query_terms))[:12]:
-                        pattern = f"%{term.lower()}%"
-                        term_rows = conn.execute(like_sql, (pattern, pattern, pattern, limit)).fetchall()
-                        for row in term_rows:
-                            if all(existing["id"] != row["id"] for existing in rows):
-                                rows.append(row)
-                                if len(rows) >= limit:
-                                    break
-                        if len(rows) >= limit:
-                            break
+                    rows = self._fts_query(conn, sql, fts_expanded, limit)
+                if not rows:
+                    rows = self._like_fallback(conn, like_sql, fts_expanded, limit)
         except (sqlite3.Error, RuntimeError):
             return []
 
-        hits = [self._row_to_hit(r) for r in rows]
-        return sorted(hits, key=lambda h: h.score, reverse=True)[:limit]
+        hits = [self._row_to_hit(row) for row in rows]
+        hits.sort(key=lambda h: (-h.score, h.id))
+        return hits[:limit]
+
+    def _fts_query(
+        self,
+        conn: sqlite3.Connection,
+        sql: str,
+        terms: list[str],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        if not terms:
+            return []
+        fts_query = " OR ".join(terms)
+        try:
+            return conn.execute(sql, (fts_query, limit)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    def _like_fallback(
+        self,
+        conn: sqlite3.Connection,
+        like_sql: str,
+        terms: list[str],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        rows: list[sqlite3.Row] = []
+        for term in terms[:12]:
+            pattern = f"%{term.lower()}%"
+            for row in conn.execute(like_sql, (pattern, pattern, limit)).fetchall():
+                if all(existing["id"] != row["id"] for existing in rows):
+                    rows.append(row)
+                if len(rows) >= limit:
+                    return rows
+        return rows
 
     def _terms(self, query: str) -> list[str]:
-        return [t for t in re.findall(r"[\w']+", query.lower()) if len(t) >= 2]
+        return [token for token in re.findall(r"[\w']+", query.lower()) if len(token) >= 2]
 
     def _expand_terms(self, terms: list[str]) -> list[str]:
         expanded: list[str] = []
@@ -131,19 +147,19 @@ class HadithProvider:
             if term not in seen:
                 expanded.append(term)
                 seen.add(term)
-            for synonym in self._SYNONYMS.get(term, ()):
+            for synonym in self._SYNONYMS.get(term, ()):  # deterministic order
                 if synonym not in seen:
                     expanded.append(synonym)
                     seen.add(synonym)
         return expanded
 
     def _dedupe(self, terms: list[str]) -> list[str]:
-        seen: set[str] = set()
         out: list[str] = []
+        seen: set[str] = set()
         for term in terms:
             if term not in seen:
-                seen.add(term)
                 out.append(term)
+                seen.add(term)
         return out
 
     def debug_stats(self, sample_term: str = "patience") -> dict[str, int | bool]:
