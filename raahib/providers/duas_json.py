@@ -18,8 +18,8 @@ class DuaHit:
 
 
 _SYNONYMS: dict[str, set[str]] = {
-    "grief": {"sadness", "anxiety", "worry", "huzn", "ham"},
-    "sadness": {"grief", "huzn", "ham", "worry"},
+    "grief": {"sadness", "anxiety", "worry", "huzn", "ham", "despair"},
+    "sadness": {"grief", "huzn", "ham", "worry", "despair"},
     "anxiety": {"worry", "fear", "panic"},
 }
 
@@ -29,9 +29,11 @@ def _tokens(text: str) -> set[str]:
 
 
 class DuaProvider:
-    def __init__(self, json_path: str | None = None) -> None:
+    def __init__(self, json_path: str | None = None, tags_path: str | None = None) -> None:
         self.json_path = Path(json_path).expanduser() if json_path else None
+        self.tags_path = Path(tags_path).expanduser() if tags_path else None
         self._duas: list[dict[str, object]] = []
+        self._tags: dict[str, set[str]] = {}
         self._loaded = False
 
     @property
@@ -44,14 +46,17 @@ class DuaProvider:
         self._loaded = True
         if not self.configured:
             self._duas = []
+            self._tags = {}
             return
         try:
             payload = json.loads(self.json_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             self._duas = []
+            self._tags = {}
             return
         if not isinstance(payload, list):
             self._duas = []
+            self._tags = {}
             return
         parsed: list[dict[str, object]] = []
         for raw in payload:
@@ -65,12 +70,28 @@ class DuaProvider:
                     "id": str(raw.get("id", "")),
                     "title": str(raw.get("english", "")).strip(),
                     "description": str(raw.get("description", "")).strip(),
-                    "arabic_lines": [str(line) for line in arabic_lines],
+                    "arabic_lines": [str(line).strip() for line in arabic_lines if str(line).strip()],
                     "translation": self._normalize_translation(raw.get("translation")),
                     "translation_lines": self._normalize_translation_lines(raw.get("translation_lines")),
                 }
             )
         self._duas = parsed
+        self._tags = self._load_tags()
+
+    def _load_tags(self) -> dict[str, set[str]]:
+        if not self.tags_path or not self.tags_path.exists():
+            return {}
+        try:
+            payload = json.loads(self.tags_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        tags: dict[str, set[str]] = {}
+        for key, value in payload.items():
+            if isinstance(value, list):
+                tags[str(key)] = {str(v).lower().strip() for v in value if str(v).strip()}
+        return tags
 
     def _normalize_translation(self, value: object) -> str | None:
         if isinstance(value, list):
@@ -90,8 +111,6 @@ class DuaProvider:
         if not terms:
             return []
         query_tokens = _tokens(query)
-        dua_for_match = re.search(r"\bdu['’]?a\s+for\s+(.+)", query, flags=re.IGNORECASE)
-        topic_tokens = _tokens(dua_for_match.group(1)) if dua_for_match else set()
         expanded_terms = set(query_tokens)
         for token in list(query_tokens):
             expanded_terms |= _SYNONYMS.get(token, set())
@@ -107,16 +126,15 @@ class DuaProvider:
             ).lower()
             searchable_tokens = _tokens(searchable)
             matched_terms = len(expanded_terms & searchable_tokens)
-            if matched_terms == 0:
+            tags = self._tags.get(str(dua["id"]), set())
+            tag_overlap = len(query_tokens & tags)
+            if matched_terms == 0 and tag_overlap == 0:
                 continue
             score = matched_terms / max(len(expanded_terms), 1)
             if query.lower().strip() and query.lower().strip() in searchable:
                 score = max(score, 0.95)
-            if topic_tokens:
-                title_desc_tokens = _tokens(f"{dua['title']} {dua['description']}")
-                topic_overlap = len(topic_tokens & title_desc_tokens)
-                if topic_overlap:
-                    score += 0.2 * (topic_overlap / len(topic_tokens))
+            if tag_overlap:
+                score += 1.5 + (tag_overlap / max(len(query_tokens), 1))
             hits.append(
                 DuaHit(
                     id=str(dua["id"]),
@@ -125,7 +143,7 @@ class DuaProvider:
                     arabic_lines=list(dua["arabic_lines"]),
                     translation=str(dua.get("translation") or "") or None,
                     translation_lines=list(dua.get("translation_lines") or []),
-                    score=min(score, 1.0),
+                    score=score,
                 )
             )
 

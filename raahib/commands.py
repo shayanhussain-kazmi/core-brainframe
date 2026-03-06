@@ -93,6 +93,18 @@ class CommandParser:
                 metadata={"type": "command", "name": "sources", "success": "true"},
             )
 
+
+        if cleaned.lower() == "hadith:debug":
+            if not self.hadith_provider or not self.hadith_provider.configured:
+                return CommandResult(True, "Hadith provider is disabled.", {"type": "command", "name": "hadith_debug", "success": "false"})
+            stats = self.hadith_provider.debug_stats("patience")
+            output = (
+                f"hadiths_fts table: {'present' if stats['fts_present'] else 'missing'}\n"
+                f"hadith rows: {stats['hadith_rows']}\n"
+                f"fts sample match \"patience\": {stats['fts_sample_match']}"
+            )
+            return CommandResult(True, output, {"type": "command", "name": "hadith_debug", "success": "true"})
+
         if cleaned.lower().startswith("hadith:search "):
             query = cleaned.split(" ", 1)[1].strip()
             if not self.hadith_provider or not self.hadith_provider.configured:
