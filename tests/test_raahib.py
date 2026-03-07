@@ -101,6 +101,14 @@ class StubHadithMissProvider:
     def debug_stats(self, sample_term: str = "patience") -> dict[str, int | bool]:
         return {"fts_present": False, "hadith_rows": 0, "fts_sample_match": 0}
 
+class StubEmptyDuaProvider:
+    configured = True
+
+    def search(self, query: str, limit: int = 5) -> list[DuaHit]:
+        return []
+
+    def get_by_id(self, dua_id: str) -> DuaHit | None:
+        return None
 
 class StubDuaHadithKisaProvider:
     configured = True
@@ -403,6 +411,61 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertEqual(result.metadata["type"], "hadith_miss")
             self.assertEqual(result.metadata["attempted_query"], "Hadith about patience")
             self.assertIn("couldn't find a hadith match", result.text)
+
+    def test_emotional_dua_query_adds_comfort_intro(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("I feel anxious, dua for calm")
+
+            self.assertEqual(result.metadata["type"], "dua_preview")
+            self.assertTrue(result.text.startswith("I'm sorry this feels overwhelming."))
+            self.assertIn("\n\nDua with higher score", result.text)
+
+    def test_emotional_query_with_no_result_adds_gentle_miss_intro(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            hadith = StubHadithMissProvider()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=hadith,
+                dua_provider=StubEmptyDuaProvider(),
+            )
+
+            result = router.route("I feel anxious dua for relief")
+
+            self.assertEqual(result.metadata["type"], "dua_miss")
+            self.assertIn("I don't yet have a saved source specifically for that.", result.text)
+            self.assertIn("I couldn't find a relevant dua in local sources.", result.text)
+
+    def test_explicit_hadith_without_emotion_has_no_comfort_intro(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("Hadith about patience")
+
+            self.assertEqual(result.metadata["type"], "hadith_preview")
+            self.assertFalse(result.text.startswith("I'm sorry"))
+            self.assertFalse(result.text.startswith("That sounds"))
 
     def test_router_provider_preview_and_expand_flow(self) -> None:
         with _windows_safe_tempdir() as td_path:
