@@ -12,6 +12,8 @@ from raahib.providers import DuaHit, DuaProvider, HadithHit, HadithProvider
 from raahib.safety import SafetyGate
 from raahib.state import AppState
 
+_ISLAMIC_COMFORT_EMOTIONS = {"sadness", "grief", "anxiety", "hopelessness", "fear", "guilt"}
+
 _ISLAMIC_KEYWORDS = {
     "quran",
     "qur'an",
@@ -257,9 +259,9 @@ class Router:
         emotion_category = detect_emotion_category(user_text)
         explicit_hadith = self._is_explicit_hadith_intent(user_text)
         explicit_dua = self._is_explicit_dua_intent(user_text)
-        islamic = self._is_islamic_query(user_text)
-        emotional_islamic = bool(emotion_category and islamic)
-        emotional_prefer_dua = bool(emotion_category and islamic and not explicit_hadith and not explicit_dua)
+        emotional_islamic = emotion_category in _ISLAMIC_COMFORT_EMOTIONS
+        islamic = self._is_islamic_query(user_text) or emotional_islamic
+        emotional_prefer_dua = bool(emotional_islamic and not explicit_hadith and not explicit_dua)
 
         if explicit_hadith:
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)

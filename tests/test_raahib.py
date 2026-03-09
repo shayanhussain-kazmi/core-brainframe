@@ -449,6 +449,64 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("I don't yet have a saved source specifically for that.", result.text)
             self.assertIn("I couldn't find a relevant dua in local sources.", result.text)
 
+    def test_plain_hopeless_query_routes_to_islamic_comfort_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=llm,
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("I feel hopeless")
+
+            self.assertIn(result.metadata["type"], {"dua_preview", "kb", "hadith_preview", "kb_miss"})
+            self.assertFalse(llm.called)
+
+    def test_plain_anxious_query_blocks_llm_and_stays_sourced(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            kb = KnowledgeBase(settings.kb_db_path)
+            kb.init_db()
+            hadith = StubHadithMissProvider()
+            router = Router(
+                state=state,
+                kb=kb,
+                llm=llm,
+                hadith_provider=hadith,
+                dua_provider=StubEmptyDuaProvider(),
+            )
+
+            result = router.route("I'm anxious")
+
+            self.assertIn(result.metadata["type"], {"dua_preview", "kb", "hadith_preview", "kb_miss"})
+            self.assertFalse(llm.called)
+
+    def test_hadith_about_patience_still_prefers_hadith(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=llm,
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("Hadith about patience")
+
+            self.assertEqual(result.metadata["type"], "hadith_preview")
+            self.assertEqual(result.metadata["provider"], "hadith")
+            self.assertFalse(llm.called)
+
     def test_explicit_hadith_without_emotion_has_no_comfort_intro(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
