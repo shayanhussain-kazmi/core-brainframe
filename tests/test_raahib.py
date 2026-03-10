@@ -110,6 +110,25 @@ class StubEmptyDuaProvider:
     def get_by_id(self, dua_id: str) -> DuaHit | None:
         return None
 
+
+
+class TrackingHadithProvider(StubHadithProvider):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def search(self, query: str, limit: int = 5) -> list[HadithHit]:
+        self.calls.append(query)
+        return super().search(query, limit)
+
+
+class TrackingDuaProvider(StubDuaProvider):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def search(self, query: str, limit: int = 5) -> list[DuaHit]:
+        self.calls.append(query)
+        return super().search(query, limit)
+
 class StubDuaHadithKisaProvider:
     configured = True
 
@@ -449,44 +468,92 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("I don't yet have a saved source specifically for that.", result.text)
             self.assertIn("I couldn't find a relevant dua in local sources.", result.text)
 
-    def test_plain_hopeless_query_routes_to_islamic_comfort_without_llm(self) -> None:
+    def test_plain_hopeless_query_returns_comfort_offer_without_retrieval(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
             state = AppState(settings=settings)
             llm = StubLLM()
+            hadith = TrackingHadithProvider()
+            dua = TrackingDuaProvider()
             router = Router(
                 state=state,
                 kb=KnowledgeBase(settings.kb_db_path),
                 llm=llm,
-                hadith_provider=StubHadithProvider(),
-                dua_provider=StubDuaProvider(),
+                hadith_provider=hadith,
+                dua_provider=dua,
             )
 
             result = router.route("I feel hopeless")
 
-            self.assertIn(result.metadata["type"], {"dua_preview", "kb", "hadith_preview", "kb_miss"})
+            self.assertEqual(result.metadata["type"], "comfort_offer")
+            self.assertEqual(state.pending_comfort_offer, {"emotion": "hopelessness", "active": True})
+            self.assertEqual(hadith.calls, [])
+            self.assertEqual(dua.calls, [])
             self.assertFalse(llm.called)
 
-    def test_plain_anxious_query_blocks_llm_and_stays_sourced(self) -> None:
+    def test_dua_reply_after_comfort_offer_retrieves_sourced_dua(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
             state = AppState(settings=settings)
             llm = StubLLM()
-            kb = KnowledgeBase(settings.kb_db_path)
-            kb.init_db()
-            hadith = StubHadithMissProvider()
+            hadith = TrackingHadithProvider()
+            dua = TrackingDuaProvider()
             router = Router(
                 state=state,
-                kb=kb,
+                kb=KnowledgeBase(settings.kb_db_path),
                 llm=llm,
                 hadith_provider=hadith,
-                dua_provider=StubEmptyDuaProvider(),
+                dua_provider=dua,
             )
 
-            result = router.route("I'm anxious")
+            _ = router.route("I'm anxious")
+            result = router.route("dua")
 
-            self.assertIn(result.metadata["type"], {"dua_preview", "kb", "hadith_preview", "kb_miss"})
+            self.assertEqual(result.metadata["type"], "dua_preview")
+            self.assertIn("I'm sorry this feels overwhelming.", result.text)
+            self.assertIsNone(state.pending_comfort_offer)
+            self.assertEqual(hadith.calls, [])
+            self.assertEqual(dua.calls, ["dua"])
             self.assertFalse(llm.called)
+
+    def test_hadith_reply_after_comfort_offer_retrieves_sourced_hadith(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            hadith = TrackingHadithProvider()
+            dua = TrackingDuaProvider()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=hadith,
+                dua_provider=dua,
+            )
+
+            _ = router.route("I feel sad")
+            result = router.route("hadith")
+
+            self.assertEqual(result.metadata["type"], "hadith_preview")
+            self.assertIsNone(state.pending_comfort_offer)
+            self.assertEqual(hadith.calls, ["hadith"])
+            self.assertEqual(dua.calls, [])
+
+    def test_direct_dua_for_grief_bypasses_offer_and_retrieves_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=StubLLM(),
+                hadith_provider=StubHadithProvider(),
+                dua_provider=StubDuaProvider(),
+            )
+
+            result = router.route("dua for grief")
+
+            self.assertEqual(result.metadata["type"], "dua_preview")
+            self.assertNotEqual(result.metadata["type"], "comfort_offer")
 
     def test_hadith_about_patience_still_prefers_hadith(self) -> None:
         with tempfile.TemporaryDirectory() as td:
