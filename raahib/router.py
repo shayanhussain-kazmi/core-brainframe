@@ -18,7 +18,7 @@ from raahib.providers import DuaHit, DuaProvider, HadithHit, HadithProvider
 from raahib.safety import SafetyGate
 from raahib.state import AppState
 
-_ISLAMIC_COMFORT_EMOTIONS = {"sadness", "grief", "anxiety", "hopelessness", "fear", "guilt"}
+_ISLAMIC_COMFORT_EMOTIONS = {"sadness", "grief", "anxiety", "hopelessness", "fear", "guilt", "happiness", "gratitude", "relief", "peace"}
 
 _ISLAMIC_KEYWORDS = {
     "quran",
@@ -45,6 +45,7 @@ _EXPAND_TRIGGERS = {"full", "more", "expand"}
 
 _COMFORT_ACCEPT_TOKENS = {"yes", "yeah", "ok", "okay", "please", "dua", "hadith", "verse", "quran", "ayah", "something short", "help me"}
 _COMFORT_TALK_TOKENS = {"talk", "can we talk", "i want to talk"}
+_SHORTER_FOLLOWUP_TOKENS = {"this isnt short", "this isn't short", "too long", "give me something shorter", "shorter please"}
 
 
 @dataclass(slots=True)
@@ -102,8 +103,10 @@ class Router:
     def _with_comfort(self, result: RouteResult, emotion_category: str | None, source_type: str) -> RouteResult:
         if not emotion_category:
             return result
+        is_short = str(result.metadata.get("is_short", "false")).lower() == "true"
+        comfort_source_type = f"{source_type}_short" if is_short else source_type
         return RouteResult(
-            text=f"{comfort_intro_for(emotion_category, source_type)}\n\n{result.text}",
+            text=f"{comfort_intro_for(emotion_category, comfort_source_type)}\n\n{result.text}",
             metadata=result.metadata,
         )
 
@@ -123,6 +126,29 @@ class Router:
         if len(text) <= max_chars:
             return text
         return text[:max_chars].rstrip() + "…"
+
+    def _dua_search(self, query: str, prefer_short: bool = False) -> list[DuaHit]:
+        try:
+            return self.dua_provider.search(
+                query,
+                limit=self.state.settings.PROVIDER_TOP_K,
+                prefer_short=prefer_short,
+            )
+        except TypeError:
+            return self.dua_provider.search(query, limit=self.state.settings.PROVIDER_TOP_K)
+
+    def _dua_wants_short(self, query: str) -> bool:
+        wants_short = getattr(self.dua_provider, "wants_short", None)
+        if callable(wants_short):
+            return bool(wants_short(query))
+        lowered = query.lower()
+        return any(token in lowered for token in ("short", "something short", "brief", "small", "shorter"))
+
+    def _dua_is_short(self, hit: DuaHit) -> bool:
+        is_short_hit = getattr(self.dua_provider, "is_short_hit", None)
+        if callable(is_short_hit):
+            return bool(is_short_hit(hit))
+        return bool({"short", "concise", "brief"} & {tag.lower() for tag in hit.tags})
 
     def _format_hadith_miss(self, query: str) -> RouteResult:
         return RouteResult(
@@ -176,7 +202,7 @@ class Router:
         self.state.last_item = {"provider": "dua", "id": hit.id}
         return RouteResult(
             text="\n".join(lines),
-            metadata={"type": "dua_preview", "provider": "dua", "id": str(hit.id)},
+            metadata={"type": "dua_preview", "provider": "dua", "id": str(hit.id), "is_short": str(self._dua_is_short(hit)).lower()},
         )
 
     def _format_kb(self, hit: KnowledgeHit) -> RouteResult:
@@ -218,6 +244,42 @@ class Router:
             return True
         return len(lowered.split()) > 4 and detect_emotion_category(lowered) is not None
 
+    def _is_shorter_followup(self, cleaned_text: str) -> bool:
+        lowered = cleaned_text.lower()
+        if lowered in _SHORTER_FOLLOWUP_TOKENS:
+            return True
+        return "shorter" in lowered or "too long" in lowered or "isnt short" in lowered or "isn't short" in lowered
+
+    def _is_dua_last_item(self) -> bool:
+        return bool(self.state.last_item and self.state.last_item.get("provider") == "dua")
+
+    def _route_shorter_followup(self, user_text: str) -> RouteResult | None:
+        cleaned = user_text.strip()
+        if not self._is_shorter_followup(cleaned):
+            return None
+
+        pending = self.state.pending_comfort_offer
+        pending_emotion = str(pending.get("emotion") or "") if pending else ""
+        if not self._is_dua_last_item() and not (pending and pending.get("active")):
+            return None
+
+        short_query = f"dua for {pending_emotion}" if pending_emotion else "short dua"
+        dua_hits = self._dua_search(short_query, prefer_short=True)
+        short_hit = next((hit for hit in dua_hits if self._dua_is_short(hit)), None)
+        if short_hit:
+            self._clear_comfort_offer()
+            base = self._with_comfort(self._format_dua_preview(short_hit), pending_emotion or None, "dua")
+            return RouteResult(
+                text="You're right — let me give you something shorter.\n\n" + base.text,
+                metadata=base.metadata,
+            )
+
+        self._clear_comfort_offer()
+        return RouteResult(
+            text="I don't have a shorter saved source for this yet.",
+            metadata={"type": "dua_short_miss"},
+        )
+
     def _route_pending_comfort_offer(self, user_text: str) -> RouteResult | None:
         pending = self.state.pending_comfort_offer
         if not pending or not pending.get("active"):
@@ -233,7 +295,7 @@ class Router:
             requested_verse = any(token in lowered for token in ("verse", "quran", "ayah"))
 
             if requested_dua:
-                dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                dua_hits = self._dua_search(user_text, prefer_short=True)
                 if dua_hits:
                     self._clear_comfort_offer()
                     return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion, "dua")
@@ -248,7 +310,7 @@ class Router:
                     self._clear_comfort_offer()
                     return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion, "verse")
             else:
-                dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                dua_hits = self._dua_search(user_text, prefer_short=True)
                 if dua_hits:
                     self._clear_comfort_offer()
                     return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion, "dua")
@@ -325,6 +387,10 @@ class Router:
         if self._is_expand_intent(cleaned):
             return self._handle_expand()
 
+        shorter_result = self._route_shorter_followup(user_text)
+        if shorter_result:
+            return shorter_result
+
         self.state.last_item = None
 
         command_result = self.commands.parse(user_text, self.state)
@@ -368,7 +434,7 @@ class Router:
 
         if explicit_dua:
             self._clear_comfort_offer()
-            dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+            dua_hits = self._dua_search(user_text, prefer_short=self._dua_wants_short(user_text))
             if dua_hits:
                 return self._with_comfort(self._format_dua_preview(dua_hits[0]), emotion_category, "dua")
             return self._with_comfort_miss(
@@ -386,7 +452,7 @@ class Router:
                 return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category, "verse")
 
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
-            dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+            dua_hits = self._dua_search(user_text, prefer_short=emotional_islamic or self._dua_wants_short(user_text))
 
             best_hadith: HadithHit | None = hadith_hits[0] if hadith_hits else None
             best_dua: DuaHit | None = dua_hits[0] if dua_hits else None

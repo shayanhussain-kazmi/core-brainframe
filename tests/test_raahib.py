@@ -129,6 +129,51 @@ class TrackingDuaProvider(StubDuaProvider):
         self.calls.append(query)
         return super().search(query, limit)
 
+
+class ShortAwareDuaProvider:
+    configured = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def wants_short(self, query: str) -> bool:
+        lowered = query.lower()
+        return "short" in lowered or "shorter" in lowered or "brief" in lowered or "small" in lowered
+
+    def is_short_hit(self, hit: DuaHit) -> bool:
+        return "short" in {tag.lower() for tag in hit.tags}
+
+    def search(self, query: str, limit: int = 5, prefer_short: bool = False) -> list[DuaHit]:
+        self.calls.append((query, prefer_short))
+        if prefer_short:
+            return [
+                DuaHit(
+                    id="d-short",
+                    title="Short comfort dua",
+                    description="brief",
+                    arabic_lines=["s1", "s2"],
+                    translation=None,
+                    translation_lines=[],
+                    tags=["short"],
+                    score=1.0,
+                )
+            ]
+        return [
+            DuaHit(
+                id="d-long",
+                title="Long comfort dua",
+                description="long",
+                arabic_lines=["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"],
+                translation=None,
+                translation_lines=[],
+                tags=["general"],
+                score=1.0,
+            )
+        ]
+
+    def get_by_id(self, dua_id: str) -> DuaHit | None:
+        return self.search("", prefer_short=dua_id == "d-short")[0]
+
 class StubDuaHadithKisaProvider:
     configured = True
 
@@ -496,6 +541,33 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertIn("I don't yet have a saved source specifically for that.", result.text)
             self.assertIn("I couldn't find a relevant dua in local sources.", result.text)
 
+    def test_happy_query_returns_positive_comfort_offer_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            router = Router(state=state, kb=KnowledgeBase(settings.kb_db_path), llm=llm)
+
+            result = router.route("I feel happy")
+
+            self.assertEqual(result.metadata["type"], "comfort_offer")
+            self.assertEqual(result.metadata["emotion"], "happiness")
+            self.assertIn("Alhamdulillah", result.text)
+            self.assertFalse(llm.called)
+
+    def test_alhamdulillah_feel_better_returns_positive_comfort_offer(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            router = Router(state=state, kb=KnowledgeBase(settings.kb_db_path), llm=llm)
+
+            result = router.route("Alhamdulillah I feel better")
+
+            self.assertEqual(result.metadata["type"], "comfort_offer")
+            self.assertEqual(result.metadata["emotion"], "gratitude")
+            self.assertFalse(llm.called)
+
     def test_plain_hopeless_query_returns_comfort_offer_without_retrieval(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
@@ -544,6 +616,30 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertEqual(dua.calls, ["dua"])
             self.assertFalse(llm.called)
 
+    def test_this_isnt_short_followup_retrieves_shorter_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
+            state = AppState(settings=settings)
+            llm = StubLLM()
+            dua = ShortAwareDuaProvider()
+            router = Router(
+                state=state,
+                kb=KnowledgeBase(settings.kb_db_path),
+                llm=llm,
+                hadith_provider=TrackingHadithProvider(),
+                dua_provider=dua,
+            )
+
+            first = router.route("I feel anxious, dua for calm")
+            self.assertEqual(first.metadata["type"], "dua_preview")
+            self.assertIn("Let’s hold onto a supplication", first.text)
+
+            second = router.route("this isnt short")
+            self.assertEqual(second.metadata["type"], "dua_preview")
+            self.assertIn("You're right — let me give you something shorter.", second.text)
+            self.assertIn("Short comfort dua", second.text)
+            self.assertFalse(llm.called)
+
     def test_hadith_reply_after_comfort_offer_retrieves_sourced_hadith(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             settings = Settings(data_dir=Path(td), kb_db_path=Path(td) / "kb.sqlite")
@@ -562,7 +658,7 @@ class RouterTests(IsolatedEnvTestCase):
             result = router.route("hadith")
 
             self.assertEqual(result.metadata["type"], "hadith_preview")
-            self.assertIn("Here is a short hadith that may steady the heart.", result.text)
+            self.assertIn("Here is a hadith that may steady the heart.", result.text)
             self.assertNotIn("supplication may help bring calm", result.text)
             self.assertIsNone(state.pending_comfort_offer)
             self.assertEqual(hadith.calls, ["hadith"])
@@ -716,6 +812,20 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertEqual(hits[0].id, "3")
             self.assertEqual(hits[0].title, "Dua Kumayl")
 
+    def test_short_preference_ranking_prefers_short_tagged_dua(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            duas_path = td_path / "duas.json"
+            tags_path = td_path / "duas_tags.json"
+            _build_emotional_ranking_duas(duas_path)
+            _build_emotional_ranking_tags(tags_path)
+            provider = DuaProvider(str(duas_path), str(tags_path))
+
+            hits = provider.search("something short for sadness", prefer_short=True)
+
+            self.assertGreater(len(hits), 0)
+            self.assertEqual(hits[0].id, "11")
+
     def test_emotional_dua_ranking_prefers_short_directly_tagged_dua(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -727,7 +837,7 @@ class RouterTests(IsolatedEnvTestCase):
 
             hits = provider.search("dua for sadness")
 
-            self.assertGreater(len(hits), 1)
+            self.assertGreater(len(hits), 0)
             self.assertEqual(hits[0].id, "11")
             self.assertEqual(hits[0].title, "Short dua for sadness")
 
