@@ -33,3 +33,40 @@ def comfort_intro_for(category: str) -> str:
 def comfort_miss_intro() -> str:
     return "I'm sorry you're feeling this way. I don't yet have a saved source specifically for that."
 
+
+
+def comfort_offer_for(category: str) -> str:
+    offers = {
+        "sadness": (
+            "I'm sorry you're feeling this sadness. I'm here with you.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "grief": (
+            "That sounds really heavy. You don't have to carry it alone.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "anxiety": (
+            "I'm sorry this feels overwhelming right now. I'm with you.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "hopelessness": (
+            "I'm really sorry you're feeling this low. I'm here, and we can take it one step at a time.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "fear": (
+            "That sounds frightening, and I'm glad you shared it. I'm here with you.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "guilt": (
+            "Thank you for being honest about this. That takes courage.\n"
+            "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+    }
+    return offers.get(
+        category,
+        "I'm here with you. Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort.",
+    )
+
+
+def supportive_talk_response() -> str:
+    return "I'm here with you. You can tell me as much or as little as you want."

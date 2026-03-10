@@ -4,7 +4,13 @@ from dataclasses import dataclass
 import re
 
 from raahib.commands import CommandParser
-from raahib.comfort import comfort_intro_for, comfort_miss_intro, detect_emotion_category
+from raahib.comfort import (
+    comfort_intro_for,
+    comfort_miss_intro,
+    comfort_offer_for,
+    detect_emotion_category,
+    supportive_talk_response,
+)
 from raahib.kb import KnowledgeBase, KnowledgeHit
 from raahib.llm import CloudLLM
 from raahib.modes import MODE_HINTS
@@ -36,6 +42,9 @@ _ISLAMIC_KEYWORDS = {
 }
 
 _EXPAND_TRIGGERS = {"full", "more", "expand"}
+
+_COMFORT_ACCEPT_TOKENS = {"yes", "yeah", "ok", "okay", "please", "dua", "hadith", "verse", "quran", "ayah", "something short", "help me"}
+_COMFORT_TALK_TOKENS = {"talk", "can we talk", "i want to talk"}
 
 
 @dataclass(slots=True)
@@ -194,6 +203,82 @@ class Router:
             },
         )
 
+    def _clear_comfort_offer(self) -> None:
+        self.state.pending_comfort_offer = None
+
+    def _is_comfort_offer_acceptance(self, cleaned_text: str) -> bool:
+        lowered = cleaned_text.lower()
+        if lowered in _COMFORT_ACCEPT_TOKENS:
+            return True
+        return any(token in lowered for token in ("dua", "hadith", "verse", "quran", "ayah"))
+
+    def _is_supportive_talk_followup(self, cleaned_text: str) -> bool:
+        lowered = cleaned_text.lower()
+        if lowered in _COMFORT_TALK_TOKENS:
+            return True
+        return len(lowered.split()) > 4 and detect_emotion_category(lowered) is not None
+
+    def _route_pending_comfort_offer(self, user_text: str) -> RouteResult | None:
+        pending = self.state.pending_comfort_offer
+        if not pending or not pending.get("active"):
+            return None
+
+        cleaned = user_text.strip()
+        lowered = cleaned.lower()
+        pending_emotion = str(pending.get("emotion") or "") or None
+
+        if self._is_comfort_offer_acceptance(cleaned):
+            requested_dua = self._is_explicit_dua_intent(user_text) or "dua" in lowered
+            requested_hadith = self._is_explicit_hadith_intent(user_text) or "hadith" in lowered
+            requested_verse = any(token in lowered for token in ("verse", "quran", "ayah"))
+
+            if requested_dua:
+                dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if dua_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion)
+            elif requested_hadith:
+                hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if hadith_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion)
+            elif requested_verse:
+                kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if kb_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion)
+            else:
+                dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if dua_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion)
+                kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if kb_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion)
+                hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
+                if hadith_hits:
+                    self._clear_comfort_offer()
+                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion)
+
+            self._clear_comfort_offer()
+            return self._with_comfort_miss(
+                RouteResult(
+                    text="I couldn't find a relevant Islamic reference in the local knowledge sources.",
+                    metadata={"type": "kb_miss"},
+                ),
+                pending_emotion,
+            )
+
+        if self._is_supportive_talk_followup(cleaned):
+            return RouteResult(
+                text=supportive_talk_response(),
+                metadata={"type": "comfort_offer_followup"},
+            )
+
+        self._clear_comfort_offer()
+        return None
+
     def _handle_expand(self) -> RouteResult:
         if not self.state.last_item:
             return RouteResult(
@@ -257,19 +342,32 @@ class Router:
             )
 
         emotion_category = detect_emotion_category(user_text)
+        pending_result = self._route_pending_comfort_offer(user_text)
+        if pending_result:
+            return pending_result
+
         explicit_hadith = self._is_explicit_hadith_intent(user_text)
         explicit_dua = self._is_explicit_dua_intent(user_text)
         emotional_islamic = emotion_category in _ISLAMIC_COMFORT_EMOTIONS
         islamic = self._is_islamic_query(user_text) or emotional_islamic
         emotional_prefer_dua = bool(emotional_islamic and not explicit_hadith and not explicit_dua)
 
+        if emotional_islamic and not explicit_hadith and not explicit_dua and not self._is_islamic_query(user_text):
+            self.state.pending_comfort_offer = {"emotion": emotion_category or "unknown", "active": True}
+            return RouteResult(
+                text=comfort_offer_for(emotion_category or ""),
+                metadata={"type": "comfort_offer", "emotion": emotion_category or "unknown"},
+            )
+
         if explicit_hadith:
+            self._clear_comfort_offer()
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if hadith_hits:
                 return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), emotion_category)
             return self._with_comfort_miss(self._format_hadith_miss(user_text), emotion_category)
 
         if explicit_dua:
+            self._clear_comfort_offer()
             dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if dua_hits:
                 return self._with_comfort(self._format_dua_preview(dua_hits[0]), emotion_category)
@@ -282,6 +380,7 @@ class Router:
             )
 
         if islamic:
+            self._clear_comfort_offer()
             kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if kb_hits and kb_hits[0].score >= self.state.settings.kb_strong_match_threshold and not emotional_prefer_dua:
                 return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category)
@@ -317,6 +416,7 @@ class Router:
                 emotion_category,
             )
 
+        self._clear_comfort_offer()
         hits = self.kb.search(user_text)
         if hits:
             top = max(hits, key=lambda hit: hit.score)
