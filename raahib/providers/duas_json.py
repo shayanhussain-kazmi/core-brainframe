@@ -50,6 +50,14 @@ _EMOTIONAL_TAG_BOOSTS: dict[str, float] = {
     "hopelessness": 1.0,
 }
 
+_SHORT_TAGS = {"short", "concise", "brief"}
+_SHORT_REQUEST_TOKENS = {
+    "short",
+    "something short",
+    "brief",
+    "small",
+}
+
 _GENERAL_SYNONYMS: dict[str, set[str]] = {
     token: {alias for alias in synonyms if alias != token}
     for synonyms in _TOPIC_SYNONYMS.values()
@@ -164,7 +172,14 @@ class DuaProvider:
             return []
         return [str(line).strip() for line in value if str(line).strip()]
 
-    def search(self, query: str, limit: int = 5) -> list[DuaHit]:
+    def is_short_hit(self, hit: DuaHit) -> bool:
+        return bool(_SHORT_TAGS & {tag.lower() for tag in hit.tags})
+
+    def wants_short(self, query: str) -> bool:
+        lowered = query.lower()
+        return any(token in lowered for token in _SHORT_REQUEST_TOKENS)
+
+    def search(self, query: str, limit: int = 5, prefer_short: bool = False) -> list[DuaHit]:
         self._ensure_loaded()
         if not query.strip():
             return []
@@ -178,6 +193,7 @@ class DuaProvider:
         topic = self._extract_topic(query_tokens)
         topic_terms = _TOPIC_SYNONYMS.get(topic, set()) if topic else set()
         emotional_query = topic in _EMOTIONAL_TOPICS
+        short_requested = prefer_short or self.wants_short(query)
 
         hits: list[DuaHit] = []
         for dua in self._duas:
@@ -221,6 +237,19 @@ class DuaProvider:
                     score += 1.5 + (tag_overlap / max(len(query_tokens), 1))
                 if topic_tag_overlap:
                     score += 5.0 + (topic_tag_overlap / max(len(topic_terms), 1))
+
+            if short_requested:
+                if _SHORT_TAGS & tags:
+                    score += 10.0
+                arabic_line_count = len(dua["arabic_lines"])
+                if arabic_line_count <= 3:
+                    score += 1.5
+                elif arabic_line_count <= 6:
+                    score += 0.5
+                elif arabic_line_count >= 10:
+                    score -= 2.5
+                elif arabic_line_count >= 7:
+                    score -= 1.5
             hits.append(
                 DuaHit(
                     id=str(dua["id"]),

@@ -7,6 +7,10 @@ EMOTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "hopelessness": ("hopeless", "hopelessness", "empty", "numb", "lost"),
     "fear": ("scared", "afraid", "fear", "frightened"),
     "guilt": ("guilty", "ashamed", "regret"),
+    "happiness": ("happy", "joyful", "glad"),
+    "gratitude": ("grateful", "thankful", "thankful to allah", "alhamdulillah"),
+    "relief": ("relieved", "lighter", "better", "calm now"),
+    "peace": ("peaceful", "at peace", "content"),
 }
 
 
@@ -26,10 +30,17 @@ def comfort_intro_for(category: str, source_type: str) -> str:
         "hopelessness": "I'm sorry you're carrying this weight.",
         "fear": "That sounds difficult.",
         "guilt": "I'm glad you asked.",
+        "happiness": "Alhamdulillah, I'm glad to hear that.",
+        "gratitude": "That is a blessing—may Allah increase it.",
+        "relief": "It's good to hear your heart feels lighter.",
+        "peace": "Alhamdulillah, may this peace remain with you.",
     }
     source_intros = {
-        "dua": "Let’s hold onto a short supplication for some calm.",
-        "hadith": "Here is a short hadith that may steady the heart.",
+        "dua_short": "Let’s hold onto a short supplication for some calm.",
+        "dua": "Let’s hold onto a supplication for some calm.",
+        "hadith_short": "Here is a short hadith that may steady the heart.",
+        "hadith": "Here is a hadith that may steady the heart.",
+        "verse_short": "Here is a short verse that may bring comfort and perspective.",
         "verse": "Here is a verse that may bring comfort and perspective.",
     }
     lead_in = lead_ins.get(category, "I'm sorry you're feeling this way.")
@@ -39,7 +50,6 @@ def comfort_intro_for(category: str, source_type: str) -> str:
 
 def comfort_miss_intro() -> str:
     return "I'm sorry you're feeling this way. I don't yet have a saved source specifically for that."
-
 
 
 def comfort_offer_for(category: str) -> str:
@@ -67,6 +77,22 @@ def comfort_offer_for(category: str) -> str:
         "guilt": (
             "Thank you for being honest about this. That takes courage.\n"
             "Would you like to tell me what is weighing on your heart? I can also share a dua, a Qur'an verse, or a short hadith for comfort."
+        ),
+        "happiness": (
+            "Alhamdulillah, I'm glad to hear that.\n"
+            "Would you like a short dua of gratitude, a verse, or a hadith to hold onto this moment?"
+        ),
+        "gratitude": (
+            "That is a blessing—may Allah increase it.\n"
+            "Would you like a short dua of gratitude, a verse, or a hadith to hold onto this moment?"
+        ),
+        "relief": (
+            "It's good to hear your heart feels lighter.\n"
+            "Would you like a short dua of gratitude, a verse, or a hadith to hold onto this moment?"
+        ),
+        "peace": (
+            "Alhamdulillah, may this peace remain with you.\n"
+            "Would you like a short dua of gratitude, a verse, or a hadith to hold onto this moment?"
         ),
     }
     return offers.get(
