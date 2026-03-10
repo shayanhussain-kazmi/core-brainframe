@@ -18,16 +18,23 @@ def detect_emotion_category(text: str) -> str | None:
     return None
 
 
-def comfort_intro_for(category: str) -> str:
-    intros = {
-        "sadness": "I'm sorry you're feeling this way.\nTake a breath—let's hold onto a short supplication.",
-        "grief": "That sounds heavy.\nIn times of loss, a sincere supplication can steady the heart.",
-        "anxiety": "I'm sorry this feels overwhelming.\nA brief supplication may help bring calm, insha'Allah.",
-        "hopelessness": "I'm sorry you're carrying this weight.\nWhen the heart feels empty, a supplication can restore direction.",
-        "fear": "That sounds difficult.\nWhen fear rises, a grounded supplication can bring steadiness.",
-        "guilt": "I'm glad you asked.\nA sincere supplication for forgiveness is a strong place to begin.",
+def comfort_intro_for(category: str, source_type: str) -> str:
+    lead_ins = {
+        "sadness": "I'm sorry you're feeling this way.",
+        "grief": "That sounds heavy.",
+        "anxiety": "I'm sorry this feels overwhelming.",
+        "hopelessness": "I'm sorry you're carrying this weight.",
+        "fear": "That sounds difficult.",
+        "guilt": "I'm glad you asked.",
     }
-    return intros.get(category, "I'm sorry you're feeling this way.")
+    source_intros = {
+        "dua": "Let’s hold onto a short supplication for some calm.",
+        "hadith": "Here is a short hadith that may steady the heart.",
+        "verse": "Here is a verse that may bring comfort and perspective.",
+    }
+    lead_in = lead_ins.get(category, "I'm sorry you're feeling this way.")
+    source_intro = source_intros.get(source_type, source_intros["dua"])
+    return f"{lead_in}\n{source_intro}"
 
 
 def comfort_miss_intro() -> str:

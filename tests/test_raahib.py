@@ -233,6 +233,34 @@ def _build_grief_tags(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _build_emotional_ranking_duas(path: Path) -> None:
+    payload = [
+        {
+            "id": 10,
+            "english": "Long general supplication",
+            "description": "General remembrance and praise.",
+            "arabic": ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"],
+            "translation": ["general line"],
+        },
+        {
+            "id": 11,
+            "english": "Short dua for sadness",
+            "description": "A brief dua for sadness and grief.",
+            "arabic": ["s1", "s2"],
+            "translation": ["sadness line"],
+        },
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _build_emotional_ranking_tags(path: Path) -> None:
+    payload = [
+        {"id": "10", "english": "Long general supplication", "tags": ["general", "dua"]},
+        {"id": "11", "english": "Short dua for sadness", "tags": ["sadness", "grief", "short"]},
+    ]
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 @contextmanager
 def _windows_safe_tempdir():
     td = tempfile.TemporaryDirectory()
@@ -534,6 +562,8 @@ class RouterTests(IsolatedEnvTestCase):
             result = router.route("hadith")
 
             self.assertEqual(result.metadata["type"], "hadith_preview")
+            self.assertIn("Here is a short hadith that may steady the heart.", result.text)
+            self.assertNotIn("supplication may help bring calm", result.text)
             self.assertIsNone(state.pending_comfort_offer)
             self.assertEqual(hadith.calls, ["hadith"])
             self.assertEqual(dua.calls, [])
@@ -685,6 +715,21 @@ class RouterTests(IsolatedEnvTestCase):
             self.assertGreater(len(hits), 0)
             self.assertEqual(hits[0].id, "3")
             self.assertEqual(hits[0].title, "Dua Kumayl")
+
+    def test_emotional_dua_ranking_prefers_short_directly_tagged_dua(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            duas_path = td_path / "duas.json"
+            tags_path = td_path / "duas_tags.json"
+            _build_emotional_ranking_duas(duas_path)
+            _build_emotional_ranking_tags(tags_path)
+            provider = DuaProvider(str(duas_path), str(tags_path))
+
+            hits = provider.search("dua for sadness")
+
+            self.assertGreater(len(hits), 1)
+            self.assertEqual(hits[0].id, "11")
+            self.assertEqual(hits[0].title, "Short dua for sadness")
 
     def test_last_item_cleared_on_new_non_expand_request(self) -> None:
         with _windows_safe_tempdir() as td_path:
