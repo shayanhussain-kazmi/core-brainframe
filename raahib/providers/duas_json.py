@@ -19,18 +19,35 @@ class DuaHit:
 
 
 _TOPIC_SYNONYMS: dict[str, set[str]] = {
-    "grief": {
-        "grief",
+    "sadness": {
+        "sad",
         "sadness",
+        "down",
+        "low",
         "huzn",
-        "ham",
         "sorrow",
         "depressed",
         "depression",
-        "hopeless",
-        "hopelessness",
     },
+    "grief": {
+        "grief",
+        "grieving",
+        "mourning",
+        "loss",
+        "sorrow",
+    },
+    "hopelessness": {"hopeless", "hopelessness", "despair", "empty", "numb", "lost"},
     "anxiety": {"anxiety", "anxious", "worry", "worried", "panic", "fear"},
+}
+
+_EMOTIONAL_TOPICS = {"sadness", "grief", "hopelessness", "anxiety"}
+
+_EMOTIONAL_TAG_BOOSTS: dict[str, float] = {
+    "short": 0.5,
+    "grief": 1.0,
+    "sadness": 1.0,
+    "anxiety": 1.0,
+    "hopelessness": 1.0,
 }
 
 _GENERAL_SYNONYMS: dict[str, set[str]] = {
@@ -159,7 +176,8 @@ class DuaProvider:
             expanded_terms |= _GENERAL_SYNONYMS.get(token, set())
 
         topic = self._extract_topic(query_tokens)
-        topic_tags = _TOPIC_SYNONYMS.get(topic, set()) if topic else set()
+        topic_terms = _TOPIC_SYNONYMS.get(topic, set()) if topic else set()
+        emotional_query = topic in _EMOTIONAL_TOPICS
 
         hits: list[DuaHit] = []
         for dua in self._duas:
@@ -174,16 +192,35 @@ class DuaProvider:
             matched_terms = len(expanded_terms & searchable_tokens)
             tags = dua.get("tags") if isinstance(dua.get("tags"), set) else set()
             tag_overlap = len(query_tokens & tags)
-            topic_overlap = len(topic_tags & tags)
-            if matched_terms == 0 and tag_overlap == 0 and topic_overlap == 0:
+            topic_tag_overlap = len(topic_terms & tags)
+            description_tokens = _tokens(str(dua["description"]))
+            title_tokens = _tokens(str(dua["title"]))
+            title_desc_overlap = len(expanded_terms & (description_tokens | title_tokens))
+            if matched_terms == 0 and tag_overlap == 0 and topic_tag_overlap == 0 and title_desc_overlap == 0:
                 continue
-            score = matched_terms / max(len(expanded_terms), 1)
-            if query.lower().strip() and query.lower().strip() in searchable:
-                score = max(score, 0.95)
-            if tag_overlap:
-                score += 1.5 + (tag_overlap / max(len(query_tokens), 1))
-            if topic_overlap:
-                score += 5.0 + (topic_overlap / max(len(topic_tags), 1))
+
+            if emotional_query:
+                score = topic_tag_overlap * 12.0
+                score += tag_overlap * 2.5
+                score += title_desc_overlap * 0.75
+                score += matched_terms * 0.05
+                if tags:
+                    score += sum(_EMOTIONAL_TAG_BOOSTS.get(tag, 0.0) for tag in tags)
+                arabic_line_count = len(dua["arabic_lines"])
+                if arabic_line_count <= 3:
+                    score += 1.0
+                elif arabic_line_count <= 6:
+                    score += 0.5
+                else:
+                    score -= min((arabic_line_count - 6) * 0.1, 1.5)
+            else:
+                score = matched_terms / max(len(expanded_terms), 1)
+                if query.lower().strip() and query.lower().strip() in searchable:
+                    score = max(score, 0.95)
+                if tag_overlap:
+                    score += 1.5 + (tag_overlap / max(len(query_tokens), 1))
+                if topic_tag_overlap:
+                    score += 5.0 + (topic_tag_overlap / max(len(topic_terms), 1))
             hits.append(
                 DuaHit(
                     id=str(dua["id"]),

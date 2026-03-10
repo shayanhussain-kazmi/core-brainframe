@@ -99,11 +99,11 @@ class Router:
             return True
         return any(keyword in lowered for keyword in _ISLAMIC_KEYWORDS)
 
-    def _with_comfort(self, result: RouteResult, emotion_category: str | None) -> RouteResult:
+    def _with_comfort(self, result: RouteResult, emotion_category: str | None, source_type: str) -> RouteResult:
         if not emotion_category:
             return result
         return RouteResult(
-            text=f"{comfort_intro_for(emotion_category)}\n\n{result.text}",
+            text=f"{comfort_intro_for(emotion_category, source_type)}\n\n{result.text}",
             metadata=result.metadata,
         )
 
@@ -236,30 +236,30 @@ class Router:
                 dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if dua_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion, "dua")
             elif requested_hadith:
                 hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if hadith_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion, "hadith")
             elif requested_verse:
                 kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if kb_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion, "verse")
             else:
                 dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if dua_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_dua_preview(dua_hits[0]), pending_emotion, "dua")
                 kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if kb_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_kb(kb_hits[0]), pending_emotion, "verse")
                 hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
                 if hadith_hits:
                     self._clear_comfort_offer()
-                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion)
+                    return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), pending_emotion, "hadith")
 
             self._clear_comfort_offer()
             return self._with_comfort_miss(
@@ -363,14 +363,14 @@ class Router:
             self._clear_comfort_offer()
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if hadith_hits:
-                return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), emotion_category)
+                return self._with_comfort(self._format_hadith_preview(hadith_hits[0]), emotion_category, "hadith")
             return self._with_comfort_miss(self._format_hadith_miss(user_text), emotion_category)
 
         if explicit_dua:
             self._clear_comfort_offer()
             dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if dua_hits:
-                return self._with_comfort(self._format_dua_preview(dua_hits[0]), emotion_category)
+                return self._with_comfort(self._format_dua_preview(dua_hits[0]), emotion_category, "dua")
             return self._with_comfort_miss(
                 RouteResult(
                     text="I couldn't find a relevant dua in local sources.",
@@ -383,7 +383,7 @@ class Router:
             self._clear_comfort_offer()
             kb_hits = self.kb.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             if kb_hits and kb_hits[0].score >= self.state.settings.kb_strong_match_threshold and not emotional_prefer_dua:
-                return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category)
+                return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category, "verse")
 
             hadith_hits = self.hadith_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
             dua_hits = self.dua_provider.search(user_text, limit=self.state.settings.PROVIDER_TOP_K)
@@ -393,11 +393,11 @@ class Router:
 
             if emotional_islamic:
                 if best_dua:
-                    return self._with_comfort(self._format_dua_preview(best_dua), emotion_category)
+                    return self._with_comfort(self._format_dua_preview(best_dua), emotion_category, "dua")
                 if kb_hits:
-                    return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category)
+                    return self._with_comfort(self._format_kb(kb_hits[0]), emotion_category, "verse")
                 if best_hadith:
-                    return self._with_comfort(self._format_hadith_preview(best_hadith), emotion_category)
+                    return self._with_comfort(self._format_hadith_preview(best_hadith), emotion_category, "hadith")
             else:
                 if best_hadith and best_dua:
                     if best_hadith.score >= best_dua.score:
